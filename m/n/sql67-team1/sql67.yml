@@ -1,0 +1,19 @@
+# =============================================================================
+#  SQL67 — image d'exécution de votre compilateur
+#
+#  Ce fichier est inclus par .gitlab-ci.yml, et joint à chaque livraison (release) : la
+#  correction utilise celui de votre livraison. SQL67_IMAGE est l'image Docker dans
+#  laquelle SQL67 est lancé : par vos jobs sql67:check et sql67:translate, et par la
+#  correction.
+#
+#  Par défaut : l'image minimale sql67-env (clang, make, libc, scrut).
+#  Si SQL67 a besoin d'un environnement (Python, Java, Node…), indiquez une image
+#  publique de DOCKER HUB (pas d'autre registre), pour linux/amd64, contenant /bin/sh.
+#  Exemples : python:3.13-slim, eclipse-temurin:21-jre, node:22-slim
+#
+#  La compilation du C produit (make) et l'exécution des tests se font toujours dans
+#  sql67-env, identique pour tous les groupes.
+#  Ne mettez rien d'autre dans ce fichier : la correction n'en lit que la ligne SQL67_IMAGE.
+# =============================================================================
+variables:
+  SQL67_IMAGE: "gibson-registry.telecomnancy.univ-lorraine.fr/projets/2627/pcl/sql67/template/sujet/sql67-env:latest"

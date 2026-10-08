@@ -1,0 +1,203 @@
+# =============================================================================
+#  SQL67 — pipeline de votre projet (échafaudage fourni, voir README_ARTEFACT.md)
+#
+#    sql67:build      construit votre compilateur → artefact « SQL67 » à la racine du dépôt
+#    sql67:check      vérifie que SQL67 s'exécute dans son image, SQL67_IMAGE (bloquant)
+#    sql67:translate  SQL67 <nom>.sql <nom> pour chaque <nom>.sql de test/, dans SQL67_IMAGE
+#    sql67:test       make -C <nom> (→ <nom>/<nom>.out), puis les tests (.t) avec scrut, dans
+#                     sql67-env, comme dans votre terminal (rapport dans l'onglet Tests ;
+#                     non bloquant : un test rouge n'empêche pas de livrer)
+#    sql67:upload     (sur un tag, si sql67:check a réussi) dépose SQL67 et sql67.yml dans le
+#                     registre de paquets du projet
+#    sql67:release    (sur un tag) crée la release, avec SQL67 et sql67.yml : c'est votre LIVRAISON
+#
+#  Les jobs sans « rules » tournent aussi dans le pipeline d'un tag : au push d'un tag,
+#  SQL67 est reconstruit et vérifié à partir du commit tagué avant d'être livré.
+#
+#  Ne modifiez que les zones « À COMPLÉTER », et sql67.yml (image d'exécution de SQL67).
+#  Ne renommez ni les jobs sql67:*, ni le fichier SQL67 : la correction les cherche par leur nom.
+#  Vous pouvez ajouter vos propres jobs (tests unitaires, lint…) dans ces stages.
+# =============================================================================
+
+include:
+  - local: sql67.yml       # SQL67_IMAGE : image dans laquelle SQL67 s'exécute
+
+stages:
+  - build
+  - check
+  - test
+  - release
+
+variables:
+  # Image de référence : c'est dans cet environnement (clang, make, libc, scrut, sans réseau)
+  # que la correction compile le C produit et exécute les tests. Ne pas modifier.
+  SQL67_ENV_IMAGE: "gibson-registry.telecomnancy.univ-lorraine.fr/projets/2627/pcl/sql67/template/sujet/sql67-env:latest"
+
+  # Image de construction de SQL67. Par défaut : la même que celle où il s'exécute
+  # (SQL67_IMAGE, sql67.yml), ce qui garantit la compatibilité (glibc, runtime).
+  # À COMPLÉTER seulement si la construction demande des outils absents de SQL67_IMAGE :
+  #   Rust statique : rust:1-trixie          (SQL67_IMAGE : sql67-env)
+  #   Java          : maven:3-eclipse-temurin-21   (SQL67_IMAGE : eclipse-temurin:21-jre)
+  #   OCaml natif   : ocaml/opam:debian-13-ocaml-5.3 (SQL67_IMAGE : sql67-env)
+  # Elle doit alors avoir une glibc identique ou plus ancienne que SQL67_IMAGE (ou binaire statique).
+  SQL67_BUILD_IMAGE: $SQL67_IMAGE
+
+  # Dossiers de tests utilisés par sql67:test (séparés par des espaces).
+  SQL67_TEST_PATHS: "test/"
+
+  # Paquet de la livraison (registre de paquets du projet) : SQL67 et sql67.yml.
+  SQL67_PACKAGE: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/SQL67/${CI_COMMIT_TAG}"
+
+workflow:
+  rules:
+    # Pas de pipeline dans le dépôt modèle du sujet lui-même (seulement dans vos forks).
+    - if: $CI_PROJECT_PATH == "projets/2627/PCL/sql67/template/sujet"
+      when: never
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      when: never
+    - when: always
+
+sql67:build:
+  stage: build
+  image: $SQL67_BUILD_IMAGE
+  script:
+    # ---------------------------------------------------------------- À COMPLÉTER
+    # Commandes qui construisent votre compilateur et le copient sous le nom SQL67 à la
+    # racine du dépôt. SQL67 doit être UN fichier exécutable dans SQL67_IMAGE (voir README_ARTEFACT.md).
+    # Exemples :
+    #   C      : make && cp build/sql67 SQL67
+    #   Rust   : rustup target add x86_64-unknown-linux-musl
+    #            cargo build --release --target x86_64-unknown-linux-musl
+    #            cp target/x86_64-unknown-linux-musl/release/sql67 SQL67
+    #   Go     : CGO_ENABLED=0 go build -o SQL67 ./cmd/sql67
+    #   OCaml  : opam install -y . --deps-only && dune build && cp _build/default/bin/main.exe SQL67
+    #   Python : pip install pyinstaller && pyinstaller --onefile --name SQL67 src/main.py && cp dist/SQL67 SQL67
+    #   Java   : ./mvnw -q package && native-image -jar target/sql67.jar -o SQL67
+    - echo "sql67:build n'est pas encore complété (voir README_ARTEFACT.md)" && exit 1
+    # ----------------------------------------------------------------------------
+    - test -f SQL67 || { echo "Le fichier SQL67 n'a pas été produit à la racine du dépôt"; exit 1; }
+    - chmod +x SQL67
+  artifacts:
+    paths:
+      - SQL67
+      - sql67.yml
+    expire_in: 1 year
+
+sql67:check:
+  stage: check
+  image:
+    name: $SQL67_IMAGE
+    entrypoint: [""]
+  needs:
+    - sql67:build
+  script:
+    - echo "Image d'exécution de SQL67 $SQL67_IMAGE"
+    # Images acceptées : sql67-env, ou une image publique de Docker Hub (python:3.13-slim,
+    # eclipse-temurin:21-jre, utilisateur/image:tag…). Pas d'autre registre (ghcr.io, quay.io…).
+    - |
+      registry=${SQL67_IMAGE%%/*}
+      case "$SQL67_IMAGE" in
+        gibson-registry.telecomnancy.univ-lorraine.fr/projets/2627/pcl/sql67/template/sujet/sql67-env*) ;;
+        */*) case "$registry" in
+               docker.io|index.docker.io) ;;
+               *.*|*:*|localhost) echo "SQL67_IMAGE doit être une image de Docker Hub (voir sql67.yml)"; exit 1 ;;
+             esac ;;
+      esac
+    # SQL67 est lancé sans argument : le code de retour importe peu, sauf 126/127 (non
+    # exécutable, interpréteur absent) ou une erreur du chargeur (glibc trop récente,
+    # bibliothèque manquante) : SQL67 ne peut alors pas s'exécuter dans cette image.
+    - |
+      set +e
+      if command -v timeout > /dev/null 2>&1; then
+        timeout 10 ./SQL67 < /dev/null > /dev/null 2> sql67-check.err
+      else
+        ./SQL67 < /dev/null > /dev/null 2> sql67-check.err
+      fi
+      rc=$?
+      set -e
+      cat sql67-check.err
+      if [ "$rc" -eq 126 ] || [ "$rc" -eq 127 ] \
+         || grep -qE 'GLIBC_|error while loading shared libraries|Exec format error|required file not found' sql67-check.err; then
+        echo "SQL67 ne s'exécute pas dans $SQL67_IMAGE (code de retour $rc) : voir README_ARTEFACT.md"
+        exit 1
+      fi
+      echo "SQL67 s'exécute dans $SQL67_IMAGE (code de retour $rc)"
+
+sql67:translate:
+  stage: test
+  image:
+    name: $SQL67_IMAGE
+    entrypoint: [""]
+  needs:
+    - sql67:build
+    - sql67:check
+  script:
+    - export PATH="$PWD:$PATH"     # SQL67 (artefact de sql67:build) dans le PATH
+    # Conversion SQL → C de chaque <nom>.sql, dans son dossier : <nom>/ (C + Makefile)
+    - |
+      for sql in $(find $SQL67_TEST_PATHS -name '*.sql' | sort); do
+        dir=$(dirname "$sql"); name=$(basename "$sql" .sql)
+        echo "== $sql"
+        (cd "$dir" && SQL67 "$name.sql" "$name") || echo "ÉCHEC de SQL67 sur $sql"
+      done
+  artifacts:
+    when: always
+    paths:
+      - $SQL67_TEST_PATHS
+    expire_in: 1 week
+
+sql67:test:
+  stage: test
+  image: $SQL67_ENV_IMAGE
+  needs:
+    - sql67:translate
+  allow_failure: true
+  script:
+    # Compilation du C produit par sql67:translate : <nom>/<nom>.out
+    - |
+      for sql in $(find $SQL67_TEST_PATHS -name '*.sql' | sort); do
+        dir=$(dirname "$sql"); name=$(basename "$sql" .sql)
+        echo "== $sql"
+        make -C "$dir/$name" || echo "ÉCHEC de make sur $dir/$name"
+      done
+    # Exécution des tests : les .t lancent les <nom>/<nom>.out sur les CSV
+    - scrut test $SQL67_TEST_PATHS -r junit > report.xml
+  artifacts:
+    when: always
+    reports:
+      junit: report.xml
+    expire_in: 1 week
+
+sql67:upload:
+  stage: release
+  image: $SQL67_ENV_IMAGE
+  rules:
+    - if: $CI_COMMIT_TAG
+  needs:
+    - sql67:build
+    - sql67:check
+  script:
+    - 'curl --fail-with-body --header "JOB-TOKEN: ${CI_JOB_TOKEN}" --upload-file SQL67 "${SQL67_PACKAGE}/SQL67"'
+    - 'curl --fail-with-body --header "JOB-TOKEN: ${CI_JOB_TOKEN}" --upload-file sql67.yml "${SQL67_PACKAGE}/sql67.yml"'
+
+sql67:release:
+  stage: release
+  image: registry.gitlab.com/gitlab-org/cli:latest
+  rules:
+    - if: $CI_COMMIT_TAG
+  needs:
+    - sql67:upload
+  script:
+    - echo "Création de la release ${CI_COMMIT_TAG}"
+  release:
+    tag_name: $CI_COMMIT_TAG
+    name: "Livraison $CI_COMMIT_TAG"
+    description: "Livraison $CI_COMMIT_TAG (commit $CI_COMMIT_SHORT_SHA)"
+    assets:
+      links:
+        - name: SQL67
+          url: ${SQL67_PACKAGE}/SQL67
+          link_type: package
+        - name: sql67.yml
+          url: ${SQL67_PACKAGE}/sql67.yml
+          link_type: package
