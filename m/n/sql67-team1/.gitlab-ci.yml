@@ -81,7 +81,9 @@ sql67:build:
     - eval $(opam env)
     # 3. compiler. --build-dir dans /tmp : l'image tourne sous l'utilisateur « opam »,
     #    qui n'a pas forcément le droit d'écrire dans le dépôt cloné par GitLab.
-    - dune build --build-dir /tmp/_build bin/main.exe
+    #    --root . : la racine du projet dune est la racine du dépôt (là où est dune-project).
+    - test -f dune-project || { echo "dune-project absent de la racine du dépôt :"; ls -la; exit 1; }
+    - dune build --root . --build-dir /tmp/_build bin/main.exe
     # 4. livrer l'exécutable natif sous le nom imposé
     - cp /tmp/_build/default/bin/main.exe SQL67
     # ----------------------------------------------------------------------------
