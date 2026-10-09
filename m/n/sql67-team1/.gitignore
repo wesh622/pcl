@@ -1,6 +1,11 @@
+# Fichiers produits, à ne jamais commiter :
+
+# dossier de build de dune
 _build/
+# l'exécutable, produit par la CI (le sujet interdit de le commiter)
 SQL67
 *.install
-# dossiers générés par SQL67 dans test/ (un dossier <nom>/ par <nom>.sql)
+# dossiers générés par SQL67 dans test/ (un dossier <nom>/ par <nom>.sql)...
 test/F*/*/
+# ...sauf les dossiers de données CSV des tests, eux sont des sources
 !test/F*/data/

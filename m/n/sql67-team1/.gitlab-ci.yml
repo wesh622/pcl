@@ -73,9 +73,16 @@ sql67:build:
     #   OCaml  : opam install -y . --deps-only && dune build && cp _build/default/bin/main.exe SQL67
     #   Python : pip install pyinstaller && pyinstaller --onefile --name SQL67 src/main.py && cp dist/SQL67 SQL67
     #   Java   : ./mvnw -q package && native-image -jar target/sql67.jar -o SQL67
+    # OCaml natif : SQL67_BUILD_IMAGE = ocaml/opam:debian-13-ocaml-5.3 (plus haut).
+    # Même glibc (Debian 13) que sql67-env, où SQL67 s'exécute : binaire compatible.
+    # 1. installer les outils de build (dune) et le générateur de parseur (menhir)
     - opam install -y dune menhir
+    # 2. rendre ces outils accessibles dans le PATH
     - eval $(opam env)
+    # 3. compiler. --build-dir dans /tmp : l'image tourne sous l'utilisateur « opam »,
+    #    qui n'a pas forcément le droit d'écrire dans le dépôt cloné par GitLab.
     - dune build --build-dir /tmp/_build bin/main.exe
+    # 4. livrer l'exécutable natif sous le nom imposé
     - cp /tmp/_build/default/bin/main.exe SQL67
     # ----------------------------------------------------------------------------
     - test -f SQL67 || { echo "Le fichier SQL67 n'a pas été produit à la racine du dépôt"; exit 1; }

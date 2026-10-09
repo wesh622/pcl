@@ -1,12 +1,37 @@
+; =============================================================================
+;  bin/dune : comment construire l'exécutable du compilateur SQL67.
+;
+;  Le résultat est _build/default/bin/main.exe, que la CI copie sous le nom SQL67
+;  (voir .gitlab-ci.yml, job sql67:build).
+; =============================================================================
+
+; L'exécutable : son point d'entrée est main.ml. dune trouve tout seul les autres
+; modules du dossier (ast.ml, codegen.ml, ...) et les lie dans le bon ordre.
+; « main.exe » est un exécutable NATIF, obligatoire : le sujet précise que le
+; bytecode OCaml ne fonctionne pas dans l'image sql67-env.
 (executable
  (name main))
 
+; lexer.mll -> lexer.ml : ocamllex transforme les expressions régulières
+; en un automate (analyse lexicale).
 (ocamllex lexer)
 
+; parser.mly -> parser.ml + parser.mli : menhir transforme la grammaire
+; en un automate LR(1) (analyse syntaxique).
 (menhir
  (modules parser))
 
-; Le runtime C est embarqué dans l'exécutable : SQL67 doit être un seul fichier.
+; Le runtime C est embarqué dans l'exécutable : SQL67 doit être UN SEUL fichier
+; (contrainte du sujet, README_ARTEFACT.md). On ne peut donc pas livrer
+; runtime.c à côté de SQL67.
+;
+; Cette règle génère, à chaque build, un module OCaml runtime_c.ml qui contient :
+;     let source = {runtime| ...contenu de runtime.c... |runtime}
+; {id| ... |id} est la syntaxe OCaml des chaînes « brutes » : aucun échappement,
+; donc on peut y coller du C tel quel. main.ml y accède via Runtime_c.source.
+;
+; Avantage : runtime.c reste un vrai fichier C (coloration, édition normale),
+; et toute modification est automatiquement prise en compte au build suivant.
 (rule
  (targets runtime_c.ml)
  (deps runtime.c)

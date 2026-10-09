@@ -1,8 +1,18 @@
+# =============================================================================
+#  sql67.opam : description du paquet pour opam, le gestionnaire de paquets OCaml.
+#
+#  Sert surtout à lister les dépendances, pour que chaque membre de l'équipe
+#  puisse tout installer d'un coup :   opam install . --deps-only
+#  (la CI, elle, installe directement « dune menhir », voir .gitlab-ci.yml).
+# =============================================================================
 opam-version: "2.0"
 synopsis: "Compilateur SQL67 (fragment de SQL vers C99)"
 depends: [
+  # 4.14 minimum : main.ml utilise le module In_channel, apparu en 4.14.
   "ocaml" {>= "4.14"}
+  # outil de build
   "dune" {>= "3.0"}
+  # générateur de parseur LR(1) (bin/parser.mly)
   "menhir" {>= "20211230"}
 ]
 build: ["dune" "build" "-p" name "-j" jobs]

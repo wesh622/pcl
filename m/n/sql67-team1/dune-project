@@ -1,2 +1,15 @@
 (lang dune 3.0)
+; =============================================================================
+;  dune-project : racine du projet pour dune, l'outil de build standard d'OCaml.
+;
+;  dune cherche ce fichier pour savoir où commence le projet. Tous les fichiers
+;  « dune » des sous-dossiers (ici bin/dune) en dépendent.
+;
+;  La ligne (lang ...) DOIT être la toute première du fichier (exigence de dune) :
+;  c'est la version du langage de configuration de dune, pas celle d'OCaml.
+;  3.0 est assez ancienne pour être disponible partout (Ubuntu, Debian, opam).
+; =============================================================================
+
+; Active le support de menhir, le générateur de parseurs utilisé dans
+; bin/parser.mly. Sans cette ligne, la stanza (menhir ...) de bin/dune est refusée.
 (using menhir 2.1)
