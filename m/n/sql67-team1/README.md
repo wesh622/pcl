@@ -305,33 +305,6 @@ de réferences. Il fait apparaitre une suite d'instructions dans un style davant
 impératif que le très déclaratif SQL. Ça tombe bien, votre compilateur SQL cible du C,
 langage impératif s'il en est.
 
-## Fraude Académique
-
-Merci de prendre une minute pour lire ce message dans son intégralité!
-
-Juste un petit rappel pour que tout le monde sache ce qui est **OK** et ce qui n'est **pas OK**
-lorsqu'il s'agit de discuter avec d'autres groupes de projet de ce projet et des projets à venir.
-
-Il est **ABSOLUMENT AUTORISÉ** de :
-
-- discuter du projet en termes généraux (qu'entendent-ils par "tuyau"?)
-- discuter du fonctionnement des différentes routines de bibliothèque ou appels système (`strtok()` prend deux arguments)
-- discuter des stratégies pour une implémentation réussie (le format de notre structure de données est simple)
-- aider les autres à déboguer leur code et à repérer les problèmes
-- demander à un enseignant toute l'aide dont vous avez besoin !
-- explorer des concepts et des outils à l'aide d'un LLM
-
-Il n'est **PAS AUTORISÉ** de :
-
-- harceler quelqu'un d'autre pour obtenir beaucoup d'aide (surtout s'il a déjà terminé !)
-- partager directement votre code avec d'autres personnes ou groupes de projet
-  (oh, tu veux savoir comment utiliser `strtok()`? Voilà mon code, il fonctionne, utilise/copie le)
-- pomper une solution
-- *vibe-coder* une solution
-
-Si vous avez d'autres questions sur la zone grise entre ce qui est OK et ce qui
-n'est PAS OK, n'hésitez pas à les poser.
-
 ## F0
 
 Cette section donne les contours du premier fragment au cas où:
