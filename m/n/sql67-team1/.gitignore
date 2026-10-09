@@ -1,0 +1,6 @@
+_build/
+SQL67
+*.install
+# dossiers générés par SQL67 dans test/ (un dossier <nom>/ par <nom>.sql)
+test/F*/*/
+!test/F*/data/

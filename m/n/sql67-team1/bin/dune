@@ -1,0 +1,19 @@
+(executable
+ (name main))
+
+(ocamllex lexer)
+
+(menhir
+ (modules parser))
+
+; Le runtime C est embarqué dans l'exécutable : SQL67 doit être un seul fichier.
+(rule
+ (targets runtime_c.ml)
+ (deps runtime.c)
+ (action
+  (with-stdout-to
+   runtime_c.ml
+   (progn
+    (echo "let source = {runtime|")
+    (cat runtime.c)
+    (echo "|runtime}\n")))))
