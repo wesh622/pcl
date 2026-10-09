@@ -40,7 +40,7 @@ variables:
   #   Java          : maven:3-eclipse-temurin-21   (SQL67_IMAGE : eclipse-temurin:21-jre)
   #   OCaml natif   : ocaml/opam:debian-13-ocaml-5.3 (SQL67_IMAGE : sql67-env)
   # Elle doit alors avoir une glibc identique ou plus ancienne que SQL67_IMAGE (ou binaire statique).
-  SQL67_BUILD_IMAGE: $SQL67_IMAGE
+  SQL67_BUILD_IMAGE: "ocaml/opam:debian-13-ocaml-5.3"
 
   # Dossiers de tests utilisés par sql67:test (séparés par des espaces).
   SQL67_TEST_PATHS: "test/"
@@ -73,7 +73,10 @@ sql67:build:
     #   OCaml  : opam install -y . --deps-only && dune build && cp _build/default/bin/main.exe SQL67
     #   Python : pip install pyinstaller && pyinstaller --onefile --name SQL67 src/main.py && cp dist/SQL67 SQL67
     #   Java   : ./mvnw -q package && native-image -jar target/sql67.jar -o SQL67
-    - echo "sql67:build n'est pas encore complété (voir README_ARTEFACT.md)" && exit 1
+    - opam install -y dune menhir 
+    - eval $(opam env)
+    - dune build --build-dir /tmp/_build bin/main.exe
+    - cp /tmp/_build/default/bin/main.exe SQL67
     # ----------------------------------------------------------------------------
     - test -f SQL67 || { echo "Le fichier SQL67 n'a pas été produit à la racine du dépôt"; exit 1; }
     - chmod +x SQL67

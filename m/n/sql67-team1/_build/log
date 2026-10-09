@@ -1,0 +1,16 @@
+# dune describe --format sexp --lang 0.1
+# OCAMLPARAM: unset
+# Shared cache: enabled-except-user-rules
+# Shared cache location: /home/omar/.cache/dune/db
+# Workspace root: /home/omar/telecom_nancy/github/pcl/m/n/sql67-team1
+# Auto-detected concurrency: 8
+# Dune context:
+#  { name = "default"
+#  ; kind = "default"
+#  ; profile = Dev
+#  ; merlin = true
+#  ; fdo_target_exe = None
+#  ; build_dir = In_build_dir "default"
+#  ; instrument_with = []
+#  }
+$ /usr/bin/ocamlc.opt -config > /tmp/dune_a911a0_output
