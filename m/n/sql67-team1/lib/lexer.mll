@@ -37,7 +37,6 @@ rule token = parse
   | '*'                   { STAR }
   | ','                   { COMMA }
   | ';'                   { SEMI }
-  | '-'                   { MINUS }
   | digit+ as s           {
       match int_of_string_opt s with
       | Some n -> INT n
@@ -46,7 +45,17 @@ rule token = parse
       match keyword (String.lowercase_ascii s) with
       | Some tok -> tok
       | None -> IDENT s }
-  | '"' ([^ '"' '\n']* as s) '"'  { IDENT s }   (* identifiant quoté *)
-  | '`' ([^ '`' '\n']* as s) '`'  { IDENT s }
+  | '"'                   { quoted_ident (Buffer.create 16) lexbuf }
+  | '`' ([^ '`' '\n']+ as s) '`'  { IDENT s }
   | eof                   { EOF }
   | _ as c                { syntax_error lexbuf (Printf.sprintf "unexpected character %C" c) }
+
+(* Identifiant délimité "..." : "" vaut un guillemet ; vide interdit. *)
+and quoted_ident buf = parse
+  | "\"\""                { Buffer.add_char buf '"'; quoted_ident buf lexbuf }
+  | '"'                   {
+      if Buffer.length buf = 0 then syntax_error lexbuf "empty identifier"
+      else IDENT (Buffer.contents buf) }
+  | '\n'                  { Lexing.new_line lexbuf; Buffer.add_char buf '\n'; quoted_ident buf lexbuf }
+  | [^ '"' '\n']+ as s    { Buffer.add_string buf s; quoted_ident buf lexbuf }
+  | eof                   { syntax_error lexbuf "unterminated identifier" }

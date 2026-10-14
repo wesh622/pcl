@@ -6,7 +6,7 @@
    l'en-tête de la table à l'exécution.
 
    Une requête invalide produit quand même un programme qui compile : il
-   affiche l'erreur et termine avec le code 2 (contrat SQL67). *)
+   affiche l'erreur et termine avec le code 1 (eltravail.md). *)
 
 (* Littéral C : les caractères non imprimables passent en octal. *)
 let c_string s =

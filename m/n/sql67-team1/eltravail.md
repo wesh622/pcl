@@ -14,7 +14,7 @@ du sujet sur Gibson. Le sujet ne donne ni syntaxe ni sémantique précises : **c
   - 🗳️ **vote en cours** ;
   - ❓ **ouverte** : pas encore de réponse.
 
-Dernière mise à jour : 2026-10-14.
+Dernière mise à jour : 2026-10-14 (décisions appliquées dans le code).
 
 ---
 
@@ -117,23 +117,33 @@ Points communs :
 
 ## Écarts avec notre implémentation
 
-État du code au commit « SQL67 : génération du C et du Makefile (fragment F0) ».
+État du code au commit « Applique les décisions Gibson ». Tous les écarts connus ont été
+corrigés, sauf ceux qui attendent un vote. Les tests correspondants sont dans `test/F0/`.
 
-| # | Sujet | Décision / proposition | Notre code aujourd'hui | Statut |
-|---|---|---|---|---|
-| 1 | Code de retour des erreurs d'exécution | **1** (no such column/table, duplicate, invalid CSV) | `EXIT_ERROR 2` dans `lib/c/runtime.c` | à corriger |
-| 2 | Typage pour le tri | type **par colonne** : si une valeur n'est pas un nombre, toute la colonne est comparée en texte | comparaison **valeur par valeur** (nombres < texte) dans `cmp_cell` | à corriger |
-| 3 | CSV invalide | RFC stricte, `Error: invalid CSV file <basename>` | lecture permissive, aucune erreur | à faire |
-| 4 | Table en double | `Error: duplicate table: T` | le premier fichier trouvé est utilisé | à faire |
-| 5 | Identifiant `"my""table"` | guillemet échappé accepté | le lexer s'arrête au premier `"` | à corriger (`lib/lexer.mll`) |
-| 6 | LIMIT/OFFSET négatif | erreur de syntaxe | accepté (`MINUS INT`, limite négative = pas de limite) | à corriger après le vote |
-| 7 | Formes de LIMIT/OFFSET | selon le vote du 16/10 | on accepte **toutes** les formes (`LIMIT a,b`, `OFFSET` seul, `OFFSET … LIMIT`) | à restreindre après le vote |
-| 8 | Message d'erreur de syntaxe | `Error: syntax error` | `Error: syntax error (line L, column C)` | à aligner, code de retour à confirmer |
-| 9 | Table absente | `Error: no such table: T`, code 1 | bon message, code 2 | voir #1 |
-| 10 | Colonne absente | `Error: no such column: x`, code 1, avant toute sortie | bon message et bon moment, code 2 | voir #1 |
-| 11 | Backticks `` `col` `` | non discutés | acceptés (comme MariaDB) | sans danger, peut rester |
-| 12 | Casse des identifiants | ❓ | insensible partout (comme SQLite) | attendre ou faire une proposition |
+### Corrigés
+| Sujet | Où | Test |
+|---|---|---|
+| Code de retour **1** pour toutes les erreurs | `EXIT_ERROR` dans `lib/c/runtime.c`, `lib/error.ml` | `proj_unknown.t`, `table_unknown.t`… |
+| Type **par colonne** (int, puis float, puis texte), texte comparé avec `strcmp` (casse incluse) | `column_type`, `cmp_key` | `order_mixed.t`, `order_ints.t`, `order_name.t` |
+| CSV strict RFC 4180 : `Error: invalid CSV file <nom>` | `parse_csv` | `csv_invalid.t` |
+| Table en double : `Error: duplicate table: T` | `main` | `tables_args.t` |
+| Identifiants `"..."` avec `""` échappé | `quoted_ident` dans `lib/lexer.mll` | `ident_quoted.t` |
+| LIMIT/OFFSET négatif : erreur de syntaxe | `lib/parser.mly` (plus de `MINUS`) | `limit_negative.t` |
+| Message `Error: syntax error`, sans position | `bin/main.ml` | `syntax_error.t` |
+| Champ quoté vide `""` traité comme NULL | `parse_csv` | `csv_format.t` |
 
-Points déjà conformes : en-tête toujours présent, NULL = champ vide, guillemets retirés quand ils sont inutiles, espaces conservés, séparateur `,`, NULL en premier en `ASC`, tri stable, `SELECT *, *`, `DISTINCT`, ORDER BY multi-colonnes appliqué avant LIMIT/OFFSET, recherche de `users.csv` pour `FROM users`.
+### En attente d'un vote
+| Sujet | Aujourd'hui | Quand le vote sera clos |
+|---|---|---|
+| Formes de LIMIT/OFFSET (#2, 16/10 18h) | toutes acceptées : `LIMIT n`, `LIMIT n OFFSET m`, `OFFSET m`, `OFFSET m LIMIT n`, `LIMIT m, n` | supprimer les formes rejetées dans `limit_offset` (`lib/parser.mly`), et les tests `limit_comma` ou `offset_*` |
+| Validation des CSV (#11, 16/10) | 🥚 seul le CSV utilisé est validé | si 🪺 l'emporte : passer `#define VALIDATE_ALL 1` dans `lib/c/runtime.c` (déjà implémenté et testé à la main) |
 
-Les tests de `test/F0/` doivent suivre ces décisions. Quand un écart est corrigé, mettez à jour les `.t` concernés, par exemple `[2]` → `[1]`.
+### Nos choix sur les points ouverts (à proposer sur Gibson si besoin)
+- **Casse** : on ne distingue pas la casse des identifiants, quotés ou non (comme SQLite). Cela vaut pour les colonnes, les alias, les tables et les noms de fichiers. La casse du nom affiché est celle écrite dans la requête, ou celle de l'en-tête pour `*`.
+- **Fichier inexistant ou illisible** passé en argument : `Error: invalid CSV file <nom>`. Logique : l'argument est fourni mais inutilisable. `no such table` est réservé au cas où aucun argument ne nomme la table. Avec 🥚, un fichier inexistant qui ne sert pas est ignoré.
+- **Nombre de champs différent de l'en-tête** : CSV invalide. La RFC dit seulement « should ».
+- **Nombres** : `[+-]?` chiffres, partie décimale et exposant facultatifs (`.5`, `1e2`, `+7`). Les espaces font partie de la valeur, donc `" 12"` est un texte. Un entier qui dépasse 64 bits est traité comme un flottant. En sortie, on réécrit le texte d'origine tel quel.
+- **Syntaxe** : code de retour 1, comme les autres erreurs. L'exemple `[2]` de README_ARTEFACT n'est qu'une illustration.
+- **Extras sans danger** : `SELECT DISTINCT`, `ORDER BY 2` (position), identifiants entre backticks.
+
+Les tests de `test/F0/` suivent ces décisions : mettez-les à jour en même temps que le code.

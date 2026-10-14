@@ -3,9 +3,10 @@
    la requête elle-même est décrite dans query.c (variable QUERY).
 
    Le compilateur ne voit jamais les CSV : la résolution des colonnes se fait
-   donc ici, à partir de l'en-tête de la table. Toute erreur affiche
-   « Error: ... » et termine avec le code 2. */
-#include <ctype.h>
+   donc ici, à partir de l'en-tête de la table. Toute erreur est détectée
+   avant la première écriture sur stdout, affiche « Error: ... » sur stderr
+   et termine avec le code 1. Décisions suivies : voir eltravail.md. */
+#include <errno.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -14,7 +15,12 @@
 
 #include "sql67.h"
 
-#define EXIT_ERROR 2
+#define EXIT_ERROR 1
+
+/* Validation des CSV (vote &11 en cours) :
+   0 = seulement le CSV utilisé par la requête (« partial eager ») ;
+   1 = tous les CSV passés en argument, avant tout (« total eager »). */
+#define VALIDATE_ALL 0
 
 static void fail(const char *fmt, ...) {
   va_list ap;
@@ -39,15 +45,20 @@ static void *xrealloc(void *p, size_t n) {
   return p;
 }
 
+static const char *base_name(const char *path) {
+  const char *b = strrchr(path, '/');
+  return b ? b + 1 : path;
+}
+
 /* ------------------------------------------------------------------ CSV */
 
-/* Une cellule : texte (NULL si champ vide non quoté) + valeur numérique. */
+/* Une cellule : texte (NULL SQL si champ vide, quoté ou non). */
 struct cell {
   const char *s;
   size_t len;
-  double num;
-  int isnum;
 };
+
+enum col_type { TYPE_INT, TYPE_FLOAT, TYPE_TEXT };
 
 struct table {
   int ncols;
@@ -56,26 +67,11 @@ struct table {
   struct cell *cells; /* nrows * ncols */
 };
 
-static int parse_number(const char *s, size_t len, double *out) {
-  char buf[64];
-  char *end;
-  size_t i = 0, j = len;
-  while (i < j && (s[i] == ' ' || s[i] == '\t')) i++;
-  while (j > i && (s[j - 1] == ' ' || s[j - 1] == '\t')) j--;
-  if (i == j || j - i >= sizeof buf) return 0;
-  if (!(isdigit((unsigned char)s[i]) || s[i] == '-' || s[i] == '+' || s[i] == '.')) return 0;
-  memcpy(buf, s + i, j - i);
-  buf[j - i] = '\0';
-  if (strpbrk(buf, "xXnNiI")) return 0; /* ni hexadécimal, ni nan/inf */
-  *out = strtod(buf, &end);
-  return end != buf && *end == '\0';
-}
-
 static char *read_file(const char *path, size_t *len) {
   FILE *f = fopen(path, "rb");
   size_t cap = 1 << 16, n = 0, r;
   char *buf;
-  if (!f) fail("cannot open %s", path);
+  if (!f) return NULL;
   buf = xmalloc(cap + 1);
   while ((r = fread(buf + n, 1, cap - n, f)) > 0) {
     n += r;
@@ -84,103 +80,130 @@ static char *read_file(const char *path, size_t *len) {
       buf = xrealloc(buf, cap + 1);
     }
   }
+  if (ferror(f)) { fclose(f); free(buf); return NULL; }
   fclose(f);
   buf[n] = '\0';
   *len = n;
   return buf;
 }
 
-/* Découpe RFC 4180, en place : les champs pointent dans [buf]. */
-struct field { char *s; size_t len; int quoted; };
+/* Analyse stricte selon la grammaire RFC 4180 (fins de ligne CRLF ou LF) :
+     - un champ quoté doit être refermé, et suivi de ',' ou d'une fin de ligne ;
+     - un champ non quoté ne contient ni '"' ni CR isolé ;
+     - toutes les lignes ont autant de champs que l'en-tête ;
+     - le fichier contient au moins l'en-tête.
+   Découpe en place : les cellules pointent dans [buf]. Renvoie 0 si invalide. */
+static int parse_csv(char *buf, size_t n, struct table *t) {
+  struct cell *f = NULL;      /* tous les champs, en-tête compris */
+  size_t nf = 0, cap = 0, i = 0, rec_start, k;
+  int ncols = -1;
 
-static size_t next_record(char *buf, size_t n, size_t i, struct field **fields,
-                          size_t *cap, size_t *count) {
-  *count = 0;
+  if (n == 0) return 0;
   for (;;) {
-    struct field fl;
-    if (*count == *cap) {
-      *cap = *cap ? *cap * 2 : 16;
-      *fields = xrealloc(*fields, *cap * sizeof **fields);
-    }
-    fl.quoted = 0;
-    if (i < n && buf[i] == '"') {
-      size_t w;
-      fl.quoted = 1;
-      i++;
-      fl.s = buf + i;
-      w = i;
-      while (i < n) {
-        if (buf[i] == '"') {
-          if (i + 1 < n && buf[i + 1] == '"') { buf[w++] = '"'; i += 2; }
-          else { i++; break; }
-        } else buf[w++] = buf[i++];
+    rec_start = nf;
+    for (;;) { /* un champ */
+      struct cell fl;
+      if (nf == cap) {
+        cap = cap ? cap * 2 : 1024;
+        f = xrealloc(f, cap * sizeof *f);
       }
-      fl.len = (size_t)(buf + w - fl.s);
-      while (i < n && buf[i] != ',' && buf[i] != '\n' && buf[i] != '\r') i++;
-    } else {
-      fl.s = buf + i;
-      while (i < n && buf[i] != ',' && buf[i] != '\n' && buf[i] != '\r') i++;
-      fl.len = (size_t)(buf + i - fl.s);
+      if (i < n && buf[i] == '"') {
+        size_t w = ++i;
+        fl.s = buf + i;
+        for (;;) {
+          if (i >= n) { free(f); return 0; }          /* jamais refermé */
+          if (buf[i] == '"') {
+            if (i + 1 < n && buf[i + 1] == '"') { buf[w++] = '"'; i += 2; }
+            else { i++; break; }
+          } else buf[w++] = buf[i++];
+        }
+        fl.len = (size_t)(buf + w - fl.s);
+        if (i < n && buf[i] != ',' && buf[i] != '\n' && buf[i] != '\r') {
+          free(f); return 0;                           /* texte après le '"' */
+        }
+      } else {
+        fl.s = buf + i;
+        while (i < n && buf[i] != ',' && buf[i] != '\n' && buf[i] != '\r') {
+          if (buf[i] == '"') { free(f); return 0; }
+          i++;
+        }
+        fl.len = (size_t)(buf + i - fl.s);
+      }
+      f[nf++] = fl;
+      if (i < n && buf[i] == ',') { i++; continue; }
+      break;
     }
-    (*fields)[(*count)++] = fl;
-    if (i < n && buf[i] == ',') { i++; continue; }
-    if (i < n && buf[i] == '\r') i++;
-    if (i < n && buf[i] == '\n') i++;
-    return i;
+    if (i < n && buf[i] == '\r') {
+      if (i + 1 >= n || buf[i + 1] != '\n') { free(f); return 0; }
+      i++;
+    }
+    if (i < n) i++; /* '\n' */
+    if (ncols < 0) ncols = (int)(nf - rec_start);
+    else if (nf - rec_start != (size_t)ncols) { free(f); return 0; }
+    if (i >= n) break; /* fin de fichier, saut de ligne final facultatif */
   }
+
+  /* Tout est découpé : on peut terminer les chaînes (écrase les séparateurs). */
+  for (k = 0; k < nf; k++) ((char *)f[k].s)[f[k].len] = '\0';
+  t->ncols = ncols;
+  t->header = xmalloc((size_t)ncols * sizeof *t->header);
+  for (k = 0; k < (size_t)ncols; k++) t->header[k] = (char *)f[k].s;
+  t->nrows = nf / (size_t)ncols - 1;
+  t->cells = f + ncols;
+  for (k = 0; k < t->nrows * (size_t)ncols; k++)
+    if (t->cells[k].len == 0) t->cells[k].s = NULL; /* champ vide = NULL */
+  return 1;
 }
 
 static void load_table(const char *path, struct table *t) {
-  size_t n, i = 0, cap = 0, count, rowcap = 0;
-  struct field *fields = NULL;
+  size_t n;
   char *buf = read_file(path, &n);
-  int c;
+  if (!buf || !parse_csv(buf, n, t)) fail("invalid CSV file %s", base_name(path));
+}
 
-  t->ncols = 0;
-  t->header = NULL;
-  t->nrows = 0;
-  t->cells = NULL;
-  if (n == 0) return;
+/* ---------------------------------------------------------------- types */
 
-  i = next_record(buf, n, i, &fields, &cap, &count);
-  t->ncols = (int)count;
-  t->header = xmalloc(count * sizeof *t->header);
-  for (c = 0; c < t->ncols; c++) {
-    t->header[c] = fields[c].s;
-    fields[c].s[fields[c].len] = '\0';
+/* Entier : [+-]?[0-9]+ ; flottant : [+-]?([0-9]+(.[0-9]*)?|.[0-9]+)([eE][+-]?[0-9]+)?
+   Les espaces font partie de la valeur : " 12" est un texte. */
+static enum col_type type_of(const char *s) {
+  const char *p = s;
+  int digits = 0, is_int = 1;
+  if (*p == '+' || *p == '-') p++;
+  while (*p >= '0' && *p <= '9') { p++; digits = 1; }
+  if (*p == '.') {
+    is_int = 0;
+    p++;
+    while (*p >= '0' && *p <= '9') { p++; digits = 1; }
   }
-
-  while (i < n) {
-    struct cell *row;
-    if (buf[i] == '\n' || buf[i] == '\r') { /* ligne vide */
-      if (buf[i] == '\r') i++;
-      if (i < n && buf[i] == '\n') i++;
-      continue;
-    }
-    i = next_record(buf, n, i, &fields, &cap, &count);
-    if (t->nrows == rowcap) {
-      rowcap = rowcap ? rowcap * 2 : 1024;
-      t->cells = xrealloc(t->cells, rowcap * t->ncols * sizeof *t->cells);
-    }
-    row = t->cells + t->nrows * t->ncols;
-    for (c = 0; c < t->ncols; c++) {
-      struct cell *ce = &row[c];
-      if ((size_t)c < count && (fields[c].len > 0 || fields[c].quoted)) {
-        ce->s = fields[c].s;
-        ce->len = fields[c].len;
-        ce->isnum = parse_number(ce->s, ce->len, &ce->num);
-      } else {
-        ce->s = NULL; /* NULL SQL */
-        ce->len = 0;
-        ce->isnum = 0;
-      }
-    }
-    t->nrows++;
+  if (!digits) return TYPE_TEXT;
+  if (*p == 'e' || *p == 'E') {
+    is_int = 0;
+    p++;
+    if (*p == '+' || *p == '-') p++;
+    if (!(*p >= '0' && *p <= '9')) return TYPE_TEXT;
+    while (*p >= '0' && *p <= '9') p++;
   }
-  /* Termine les chaînes une fois tout découpé (on écrase les séparateurs). */
-  for (i = 0; i < t->nrows * (size_t)t->ncols; i++)
-    if (t->cells[i].s) ((char *)t->cells[i].s)[t->cells[i].len] = '\0';
-  free(fields);
+  if (*p) return TYPE_TEXT;
+  if (is_int) { /* hors de long long : flottant */
+    errno = 0;
+    (void)strtoll(s, NULL, 10);
+    if (errno == ERANGE) return TYPE_FLOAT;
+  }
+  return is_int ? TYPE_INT : TYPE_FLOAT;
+}
+
+/* Le plus petit type viable pour toute la colonne (valeurs NULL ignorées). */
+static enum col_type column_type(const struct table *t, int c) {
+  enum col_type ty = TYPE_INT;
+  size_t r;
+  for (r = 0; r < t->nrows && ty != TYPE_TEXT; r++) {
+    const char *s = t->cells[r * t->ncols + c].s;
+    if (s) {
+      enum col_type v = type_of(s);
+      if (v > ty) ty = v;
+    }
+  }
+  return ty;
 }
 
 /* ------------------------------------------------------------ résolution */
@@ -192,45 +215,60 @@ static int find_column(const struct table *t, const char *name) {
   return -1;
 }
 
-static const char *table_name_of(const char *path, char *buf, size_t size) {
-  const char *base = strrchr(path, '/');
-  size_t len;
-  base = base ? base + 1 : path;
-  len = strlen(base);
+/* Nom de table d'un argument : nom du fichier sans « .csv ». */
+static int names_table(const char *path, const char *table) {
+  const char *base = base_name(path);
+  size_t len = strlen(base);
   if (len > 4 && strcasecmp(base + len - 4, ".csv") == 0) len -= 4;
-  if (len >= size) len = size - 1;
-  memcpy(buf, base, len);
-  buf[len] = '\0';
-  return buf;
+  return len == strlen(table) && strncasecmp(base, table, len) == 0;
+}
+
+static int same_table_name(const char *a, const char *b) {
+  const char *ba = base_name(a), *bb = base_name(b);
+  size_t la = strlen(ba), lb = strlen(bb);
+  if (la > 4 && strcasecmp(ba + la - 4, ".csv") == 0) la -= 4;
+  if (lb > 4 && strcasecmp(bb + lb - 4, ".csv") == 0) lb -= 4;
+  return la == lb && strncasecmp(ba, bb, la) == 0;
 }
 
 /* ----------------------------------------------------------------- tri */
 
-struct key { int col; int desc; };
+/* Clé de tri, précalculée par ligne selon le type de la colonne. */
+union keyval { long long i; double d; };
+
+struct key {
+  int col;
+  int desc;
+  enum col_type type;
+  union keyval *vals; /* une valeur par ligne (INT / FLOAT) */
+};
 
 static const struct table *T;
 static const struct key *KEYS;
 static int NKEYS;
 
-/* NULL < nombres < texte (comme SQLite) ; DESC inverse tout. */
-static int cmp_cell(const struct cell *a, const struct cell *b) {
-  if (!a->s || !b->s) return (a->s != NULL) - (b->s != NULL);
-  if (a->isnum && b->isnum) return (a->num > b->num) - (a->num < b->num);
-  if (a->isnum != b->isnum) return a->isnum ? -1 : 1;
-  return strcmp(a->s, b->s);
+/* NULL est la plus petite valeur ; texte comparé octet par octet (casse incluse). */
+static int cmp_key(const struct key *k, size_t x, size_t y) {
+  const char *a = T->cells[x * T->ncols + k->col].s;
+  const char *b = T->cells[y * T->ncols + k->col].s;
+  if (!a || !b) return (a != NULL) - (b != NULL);
+  switch (k->type) {
+  case TYPE_INT: return (k->vals[x].i > k->vals[y].i) - (k->vals[x].i < k->vals[y].i);
+  case TYPE_FLOAT: return (k->vals[x].d > k->vals[y].d) - (k->vals[x].d < k->vals[y].d);
+  default: return strcmp(a, b);
+  }
 }
 
 static int cmp_rows(size_t x, size_t y) {
-  int k;
-  for (k = 0; k < NKEYS; k++) {
-    int c = cmp_cell(&T->cells[x * T->ncols + KEYS[k].col],
-                     &T->cells[y * T->ncols + KEYS[k].col]);
-    if (c) return KEYS[k].desc ? -c : c;
+  int i;
+  for (i = 0; i < NKEYS; i++) {
+    int c = cmp_key(&KEYS[i], x, y);
+    if (c) return KEYS[i].desc ? -c : c;
   }
   return 0;
 }
 
-/* Tri fusion : stable, l'ordre de la table départage les égalités. */
+/* Tri fusion : stable, l'ordre du fichier départage les égalités. */
 static void merge_sort(size_t *a, size_t *tmp, size_t n) {
   size_t mid, i, j, k;
   if (n < 2) return;
@@ -303,6 +341,7 @@ static size_t distinct(size_t *rows, size_t n) {
 
 /* ------------------------------------------------------------- sortie */
 
+/* CSV normalisé : guillemets seulement si nécessaires ; NULL = champ vide. */
 static void put_field(const char *s) {
   const char *p;
   if (!s) return;
@@ -323,27 +362,49 @@ int main(int argc, char **argv) {
   const char **out_names;
   struct key *keys;
   size_t *rows, n, start, end, r;
-  int i, o, found = -1;
-  char name[4096];
+  int i, j, o, found = -1;
   static char outbuf[1 << 16];
 
   setvbuf(stdout, outbuf, _IOFBF, sizeof outbuf);
   if (q->error) fail("%s", q->error);
 
+#if VALIDATE_ALL
+  for (i = 1; i < argc; i++) {
+    for (j = 1; j < i; j++)
+      if (same_table_name(argv[i], argv[j])) {
+        char name[4096];
+        const char *b = base_name(argv[i]);
+        size_t len = strlen(b);
+        if (len > 4 && strcasecmp(b + len - 4, ".csv") == 0) len -= 4;
+        if (len >= sizeof name) len = sizeof name - 1;
+        memcpy(name, b, len);
+        name[len] = '\0';
+        fail("duplicate table: %s", name);
+      }
+    {
+      struct table tmp;
+      load_table(argv[i], &tmp); /* tables gardées en mémoire, comme la principale */
+    }
+  }
+#endif
+
+  /* La table de la requête : exactement un argument doit la nommer. */
   for (i = 1; i < argc; i++)
-    if (strcasecmp(table_name_of(argv[i], name, sizeof name), q->table) == 0) {
+    if (names_table(argv[i], q->table)) {
+      if (found >= 0) fail("duplicate table: %s", q->table);
       found = i;
-      break;
     }
   if (found < 0) fail("no such table: %s", q->table);
+  (void)j;
+  (void)same_table_name;
   load_table(argv[found], &t);
   T = &t;
 
   /* Projection : '*' développé, colonnes résolues sur l'en-tête. */
   NOUT = 0;
   for (i = 0; i < q->nsel; i++) NOUT += q->sel[i].kind == ITEM_STAR ? t.ncols : 1;
-  OUT_COLS = xmalloc(NOUT * sizeof *OUT_COLS);
-  out_names = xmalloc(NOUT * sizeof *out_names);
+  OUT_COLS = xmalloc((size_t)NOUT * sizeof *OUT_COLS);
+  out_names = xmalloc((size_t)NOUT * sizeof *out_names);
   o = 0;
   for (i = 0; i < q->nsel; i++) {
     if (q->sel[i].kind == ITEM_STAR) {
@@ -358,7 +419,7 @@ int main(int argc, char **argv) {
   }
 
   /* ORDER BY : alias du SELECT d'abord, puis colonnes de la table. */
-  keys = xmalloc(q->norder * sizeof *keys);
+  keys = xmalloc((size_t)q->norder * sizeof *keys);
   for (i = 0; i < q->norder; i++) {
     const struct order_item *it = &q->order[i];
     int c = -1;
@@ -374,6 +435,17 @@ int main(int argc, char **argv) {
     }
     keys[i].col = c;
     keys[i].desc = it->desc;
+    keys[i].type = column_type(&t, c);
+    keys[i].vals = NULL;
+    if (keys[i].type != TYPE_TEXT) {
+      keys[i].vals = xmalloc(t.nrows * sizeof *keys[i].vals);
+      for (r = 0; r < t.nrows; r++) {
+        const char *s = t.cells[r * t.ncols + c].s;
+        if (!s) continue;
+        if (keys[i].type == TYPE_INT) keys[i].vals[r].i = strtoll(s, NULL, 10);
+        else keys[i].vals[r].d = strtod(s, NULL);
+      }
+    }
   }
   KEYS = keys;
   NKEYS = q->norder;

@@ -10,7 +10,7 @@ open Ast
 %token SELECT FROM AS ORDER BY ASC DESC LIMIT OFFSET DISTINCT ALL
 %token <string> IDENT
 %token <int> INT
-%token STAR COMMA SEMI EOF MINUS
+%token STAR COMMA SEMI EOF
 
 %start <Ast.query> query
 %%
@@ -67,7 +67,8 @@ order_key:
   | INT                           { By_position $1 }   (* ORDER BY 2 *)
 
 (* (limit, offset). Acceptés : LIMIT n [OFFSET m], OFFSET m [LIMIT n],
-   et la forme SQLite/MySQL LIMIT m, n (m = offset). *)
+   et la forme SQLite/MySQL LIMIT m, n (m = offset).
+   À restreindre selon le vote du 16/10 (eltravail.md). *)
 limit_offset:
   |                                         { (None, None) }
   | LIMIT signed_int                        { (Some $2, None) }
@@ -76,8 +77,7 @@ limit_offset:
   | OFFSET signed_int                       { (None, Some $2) }
   | OFFSET signed_int LIMIT signed_int      { (Some $4, Some $2) }
 
-(* Le signe est accepté au niveau syntaxique ; B tranche la sémantique
-   (« LIMIT -1 » diffère entre SQLite et PostgreSQL). *)
+(* Entiers décimaux non négatifs uniquement : « LIMIT -5 » est une erreur
+   de syntaxe (eltravail.md, LIMIT et OFFSET). *)
 signed_int:
   | INT                           { $1 }
-  | MINUS INT                     { - $2 }

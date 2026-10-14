@@ -3,12 +3,9 @@
    Usage : SQL67 <fichier.sql> <dossier>
    Écrit dans <dossier> du C et un Makefile ; [make -C <dossier>] produit
    <dossier>/<dossier>.out. Même pour une requête invalide : le programme
-   produit signale alors l'erreur à l'exécution (code 2). *)
+   produit signale alors l'erreur à l'exécution (code 1). *)
 
 open Sql67
-
-let show_position (p : Lexing.position) =
-  Printf.sprintf "line %d, column %d" p.pos_lnum (p.pos_cnum - p.pos_bol + 1)
 
 let () =
   if Array.length Sys.argv <> 3 then begin
@@ -19,9 +16,8 @@ let () =
   let result =
     match Parse.parse_file sql with
     | Ok q -> Ok q
-    | Error { Error.message; position = Some p; _ } ->
-        Error (Printf.sprintf "%s (%s)" message (show_position p))
-    | Error { Error.message; position = None; _ } -> Error message
+    (* Message convenu sur Gibson : « Error: syntax error », sans position. *)
+    | Error _ -> Error "syntax error"
     | exception Sys_error m -> Error m
   in
   Codegen.emit ~dir result
