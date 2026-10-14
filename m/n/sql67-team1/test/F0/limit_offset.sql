@@ -1,1 +1,1 @@
-SELECT id FROM employees LIMIT 2 OFFSET 3;
+SELECT id, produit FROM ventes LIMIT 3 OFFSET 2;

@@ -1,1 +1,0 @@
-SELECT k, n FROM big ORDER BY k DESC;

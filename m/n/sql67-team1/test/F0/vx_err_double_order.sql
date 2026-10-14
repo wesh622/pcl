@@ -1,1 +1,0 @@
-SELECT a FROM t ORDER BY a ORDER BY a;

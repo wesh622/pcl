@@ -1,1 +1,0 @@
-SELECT v FROM mixed ORDER BY v;

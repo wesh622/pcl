@@ -1,1 +1,0 @@
-SELECT DISTINCT year FROM employees ORDER BY year DESC;

@@ -1,1 +1,0 @@
-SELECT a AS b, b AS a FROM t ORDER BY a;

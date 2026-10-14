@@ -1,1 +1,0 @@
-SELECT v FROM nums ORDER BY v DESC;

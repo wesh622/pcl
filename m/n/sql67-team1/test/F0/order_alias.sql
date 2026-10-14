@@ -1,1 +1,1 @@
-SELECT name AS n FROM employees ORDER BY n DESC;
+SELECT produit AS article, prix FROM ventes ORDER BY article DESC, prix;

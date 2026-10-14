@@ -113,6 +113,19 @@ Points communs :
 - `LIMIT -5` : **erreur de syntaxe** (`Error: syntax error`). Accepté par l'enseignant (« ok pour le négatif où Postgres se plaint »).
 - Valeur trop grande : **pas d'erreur**, puisqu'aucune implémentation ne se plaint.
 
+## Stratégie de test (20 % de la note)
+
+Un test ne rapporte que s'il **passe sur le SQL67 de référence** et **fait échouer d'autres
+compilateurs**. D'où les règles suivies dans `test/F0/` :
+
+- **Un comportement par fichier `.t`** : si la référence n'est pas d'accord sur un cas, on ne perd que ce fichier.
+- **Une fiabilité en tête de chaque test** : `sûre` (décision acceptée), `probable`, `à confirmer` (choix de notre groupe).
+- **Ne jamais afficher un nombre dont l'écriture peut changer** (`1.20`, `7.00`, ou un entier dans une colonne flottante). On trie dessus, mais on n'affiche que du texte, des entiers ou des flottants déjà canoniques (`1.2`, `18.5`). La façon de réafficher un nombre n'est pas tranchée sur Gibson.
+- **Pas d'erreur attendue sur une fonctionnalité future** (`WHERE`, sous-requêtes…) : les tests F0 sont encore notés aux itérations S1 et S2, quand la référence aura grandi.
+- **Données réalistes** dans `test/F0/data/`, ou générées dans le `.t` (`printf`, `seq`, `awk` : présents dans `sql67-env`).
+- **Pas de ligne attendue vide ou finissant par une espace** : un éditeur peut les effacer (voir `csv_espaces_conserves.t`, qui marque la fin de ligne avec `|`).
+- Valider avec **scrut**, comme la correction : `scrut test test/F0`.
+
 ---
 
 ## Écarts avec notre implémentation

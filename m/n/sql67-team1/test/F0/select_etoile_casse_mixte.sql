@@ -1,0 +1,1 @@
+SeLeCt * FrOm ventes;

@@ -1,1 +1,0 @@
-SELECT id, g, v FROM t ORDER BY g DESC, v ASC;

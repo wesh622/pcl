@@ -1,1 +1,1 @@
-SELECT id FROM employees LIMIT -1;
+SELECT id FROM ventes LIMIT -1;

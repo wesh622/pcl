@@ -1,1 +1,0 @@
-SELECT id, v FROM f ORDER BY v;

@@ -1,0 +1,1 @@
+SELECT id FROM ventes LIMIT 1000;
