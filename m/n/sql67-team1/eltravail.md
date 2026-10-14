@@ -144,6 +144,8 @@ corrigés, sauf ceux qui attendent un vote. Les tests correspondants sont dans `
 - **Nombre de champs différent de l'en-tête** : CSV invalide. La RFC dit seulement « should ».
 - **Nombres** : `[+-]?` chiffres, partie décimale et exposant facultatifs (`.5`, `1e2`, `+7`). Les espaces font partie de la valeur, donc `" 12"` est un texte. Un entier qui dépasse 64 bits est traité comme un flottant. En sortie, on réécrit le texte d'origine tel quel.
 - **Syntaxe** : code de retour 1, comme les autres erreurs. L'exemple `[2]` de README_ARTEFACT n'est qu'une illustration.
+- **Commentaires** `--` et `/* ... */` (non imbriqués, comme SQLite), y compris collés aux mots-clés.
+- **LIMIT/OFFSET énormes** (au-delà de 64 bits) : pas d'erreur, on sature (sans limite / tout sauter).
 - **Extras sans danger** : `SELECT DISTINCT`, `ORDER BY 2` (position), identifiants entre backticks.
 
-Les tests de `test/F0/` suivent ces décisions : mettez-les à jour en même temps que le code.
+Les tests pièges (`test/F0/piege_*.t`, données réalistes dans `test/F0/data/`) visent les cas limites de ces décisions. Les tests de `test/F0/` suivent ces décisions : mettez-les à jour en même temps que le code.

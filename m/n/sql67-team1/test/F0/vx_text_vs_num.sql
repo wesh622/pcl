@@ -1,0 +1,1 @@
+SELECT v FROM m ORDER BY v DESC;

@@ -1,0 +1,1 @@
+SELECT prenom FROM contacts;

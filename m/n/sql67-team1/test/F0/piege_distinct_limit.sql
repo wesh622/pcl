@@ -1,0 +1,1 @@
+SELECT DISTINCT vendeuse FROM ventes ORDER BY vendeuse LIMIT 2 OFFSET 1;

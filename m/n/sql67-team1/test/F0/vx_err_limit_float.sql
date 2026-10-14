@@ -1,0 +1,1 @@
+SELECT a FROM t LIMIT 1.5;

@@ -34,13 +34,16 @@ rule token = parse
   | '\n'                  { Lexing.new_line lexbuf; token lexbuf }
   | space+                { token lexbuf }
   | "--" [^ '\n' '\r']*   { token lexbuf }        (* commentaire de ligne *)
+  | "/*"                  { comment lexbuf; token lexbuf }
   | '*'                   { STAR }
   | ','                   { COMMA }
   | ';'                   { SEMI }
   | digit+ as s           {
+      (* Trop grand pour un int OCaml : on sature (LIMIT/OFFSET énormes = sans
+         limite / tout sauter ; aucune implémentation ne s'en plaint). *)
       match int_of_string_opt s with
       | Some n -> INT n
-      | None -> syntax_error lexbuf "integer literal out of range" }
+      | None -> INT max_int }
   | ident as s            {
       match keyword (String.lowercase_ascii s) with
       | Some tok -> tok
@@ -49,6 +52,13 @@ rule token = parse
   | '`' ([^ '`' '\n']+ as s) '`'  { IDENT s }
   | eof                   { EOF }
   | _ as c                { syntax_error lexbuf (Printf.sprintf "unexpected character %C" c) }
+
+(* Commentaire de bloc, non imbriqué (comme SQLite). *)
+and comment = parse
+  | "*/"                  { () }
+  | '\n'                  { Lexing.new_line lexbuf; comment lexbuf }
+  | eof                   { syntax_error lexbuf "unterminated comment" }
+  | _                     { comment lexbuf }
 
 (* Identifiant délimité "..." : "" vaut un guillemet ; vide interdit. *)
 and quoted_ident buf = parse
