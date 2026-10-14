@@ -1,0 +1,8 @@
+# Construction
+_build/
+/SQL67
+
+# Dossiers générés par SQL67 à côté de chaque <nom>.sql (garder data/)
+/test/F[0-5]/*/
+!/test/F[0-5]/data/
+*.err

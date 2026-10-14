@@ -40,13 +40,18 @@ let resoudre_select colonnes items =
 
 (* ORDER BY : on cherche d'abord parmi les alias du SELECT, puis dans la table. *)
 let resoudre_tri colonnes sorties order_by =
-  let un_tri (Ast.Column c, dir) =
+  let un_tri = function
+    | Ast.By_position p, dir -> (
+        match if p >= 1 then List.nth_opt sorties (p - 1) else None with
+        | Some s -> Ok (s.Resolu.col, dir)
+        | None -> erreur (Printf.sprintf "position hors limites dans ORDER BY : %d" p))
+    | Ast.By_expr (Ast.Column c), dir -> (
     match List.find_opt (fun s -> egal s.Resolu.nom c) sorties with
     | Some s -> Ok (s.Resolu.col, dir)
     | None -> (
         match index_de c colonnes with
         | Some i -> Ok (i, dir)
-        | None -> erreur (Printf.sprintf "colonne inconnue dans ORDER BY : %s" c))
+        | None -> erreur (Printf.sprintf "colonne inconnue dans ORDER BY : %s" c)))
   in
   map_result un_tri order_by
 

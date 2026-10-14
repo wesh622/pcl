@@ -21,6 +21,8 @@ let keyword = function
   | "desc"   -> Some DESC
   | "limit"  -> Some LIMIT
   | "offset" -> Some OFFSET
+  | "distinct" -> Some DISTINCT
+  | "all"    -> Some ALL
   | _        -> None
 }
 
@@ -44,5 +46,7 @@ rule token = parse
       match keyword (String.lowercase_ascii s) with
       | Some tok -> tok
       | None -> IDENT s }
+  | '"' ([^ '"' '\n']* as s) '"'  { IDENT s }   (* identifiant quoté *)
+  | '`' ([^ '`' '\n']* as s) '`'  { IDENT s }
   | eof                   { EOF }
   | _ as c                { syntax_error lexbuf (Printf.sprintf "unexpected character %C" c) }

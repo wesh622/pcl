@@ -1,23 +1,27 @@
-(* Harnais de test du front-end (rôle A).
+(* SQL67 : compilateur SQL → C.
 
-   Usage : main.exe <fichier.sql> <dossier>
-   Le dossier ne sert pas encore : à terme, le vrai SQL67 y écrit le C et le
-   Makefile (rôle C). Ici, on vérifie seulement que la requête parse. *)
+   Usage : SQL67 <fichier.sql> <dossier>
+   Écrit dans <dossier> du C et un Makefile ; [make -C <dossier>] produit
+   <dossier>/<dossier>.out. Même pour une requête invalide : le programme
+   produit signale alors l'erreur à l'exécution (code 2). *)
 
 open Sql67
 
 let show_position (p : Lexing.position) =
-  Printf.sprintf "%s:%d:%d" p.pos_fname p.pos_lnum (p.pos_cnum - p.pos_bol + 1)
+  Printf.sprintf "line %d, column %d" p.pos_lnum (p.pos_cnum - p.pos_bol + 1)
 
 let () =
   if Array.length Sys.argv <> 3 then begin
     Printf.eprintf "usage: %s <fichier.sql> <dossier>\n" Sys.argv.(0);
     exit 2
   end;
-  match Parse.parse_file Sys.argv.(1) with
-  | Ok _ -> print_endline "parse OK"
-  | Error { message; position; exit_code } ->
-      (match position with
-       | Some p -> Printf.eprintf "%s: %s\n" (show_position p) message
-       | None -> Printf.eprintf "%s\n" message);
-      exit exit_code
+  let sql = Sys.argv.(1) and dir = Sys.argv.(2) in
+  let result =
+    match Parse.parse_file sql with
+    | Ok q -> Ok q
+    | Error { Error.message; position = Some p; _ } ->
+        Error (Printf.sprintf "%s (%s)" message (show_position p))
+    | Error { Error.message; position = None; _ } -> Error message
+    | exception Sys_error m -> Error m
+  in
+  Codegen.emit ~dir result
