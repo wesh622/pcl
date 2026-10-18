@@ -6,18 +6,3 @@
 (menhir
  (modules parser)
  (flags --strict))
-
-; Le moteur C (lib/c/) est embarqué dans l'exécutable SQL67 : SQL67 doit
-; être un fichier unique, sans fichier annexe.
-(rule
- (targets c_sources.ml)
- (deps c/sql67.h c/runtime.c)
- (action
-  (with-stdout-to
-   c_sources.ml
-   (progn
-    (echo "let header = {sqlc|")
-    (cat c/sql67.h)
-    (echo "|sqlc}\n\nlet runtime = {sqlc|")
-    (cat c/runtime.c)
-    (echo "|sqlc}\n")))))

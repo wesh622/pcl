@@ -1,1 +1,0 @@
-SELECT id FROM ventes LIMIT 2 OFFSET -1;

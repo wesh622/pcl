@@ -13,6 +13,7 @@ let syntax_error lexbuf message =
 
 let keyword = function
   | "select" -> Some SELECT
+  | "distinct" -> Some DISTINCT
   | "from"   -> Some FROM
   | "as"     -> Some AS
   | "order"  -> Some ORDER
@@ -21,8 +22,6 @@ let keyword = function
   | "desc"   -> Some DESC
   | "limit"  -> Some LIMIT
   | "offset" -> Some OFFSET
-  | "distinct" -> Some DISTINCT
-  | "all"    -> Some ALL
   | _        -> None
 }
 
@@ -34,38 +33,17 @@ rule token = parse
   | '\n'                  { Lexing.new_line lexbuf; token lexbuf }
   | space+                { token lexbuf }
   | "--" [^ '\n' '\r']*   { token lexbuf }        (* commentaire de ligne *)
-  | "/*"                  { comment lexbuf; token lexbuf }
   | '*'                   { STAR }
   | ','                   { COMMA }
   | ';'                   { SEMI }
+  | '-'                   { MINUS }
   | digit+ as s           {
-      (* Trop grand pour un int OCaml : on sature (LIMIT/OFFSET énormes = sans
-         limite / tout sauter ; aucune implémentation ne s'en plaint). *)
       match int_of_string_opt s with
       | Some n -> INT n
-      | None -> INT max_int }
+      | None -> syntax_error lexbuf "integer literal out of range" }
   | ident as s            {
       match keyword (String.lowercase_ascii s) with
       | Some tok -> tok
       | None -> IDENT s }
-  | '"'                   { quoted_ident (Buffer.create 16) lexbuf }
-  | '`' ([^ '`' '\n']+ as s) '`'  { IDENT s }
   | eof                   { EOF }
   | _ as c                { syntax_error lexbuf (Printf.sprintf "unexpected character %C" c) }
-
-(* Commentaire de bloc, non imbriqué (comme SQLite). *)
-and comment = parse
-  | "*/"                  { () }
-  | '\n'                  { Lexing.new_line lexbuf; comment lexbuf }
-  | eof                   { syntax_error lexbuf "unterminated comment" }
-  | _                     { comment lexbuf }
-
-(* Identifiant délimité "..." : "" vaut un guillemet ; vide interdit. *)
-and quoted_ident buf = parse
-  | "\"\""                { Buffer.add_char buf '"'; quoted_ident buf lexbuf }
-  | '"'                   {
-      if Buffer.length buf = 0 then syntax_error lexbuf "empty identifier"
-      else IDENT (Buffer.contents buf) }
-  | '\n'                  { Lexing.new_line lexbuf; Buffer.add_char buf '\n'; quoted_ident buf lexbuf }
-  | [^ '"' '\n']+ as s    { Buffer.add_string buf s; quoted_ident buf lexbuf }
-  | eof                   { syntax_error lexbuf "unterminated identifier" }

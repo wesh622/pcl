@@ -1,1 +1,0 @@
-SELECT DISTINCT produit FROM ventes ORDER BY produit LIMIT 3 OFFSET 1;

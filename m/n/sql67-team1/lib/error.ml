@@ -1,5 +1,5 @@
 (* Erreurs du compilateur — type partagé par A, B et C.
-   [exit_code] : 0 = succès, 1 = requête invalide (eltravail.md). *)
+   [exit_code] : 0 = succès, 2 = requête invalide (contrat SQL67). *)
 
 type t = {
   message   : string;
@@ -12,7 +12,7 @@ type t = {
 exception Syntax_error of t
 
 let syntax_error message position =
-  { message; position = Some position; exit_code = 1 }
+  { message; position = Some position; exit_code = 2 }
 
 let semantic_error message =
-  { message; position = None; exit_code = 1 }
+  { message; position = None; exit_code = 2 }

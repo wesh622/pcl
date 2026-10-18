@@ -1,1 +1,0 @@
-SELECT c2000, c1 FROM t;

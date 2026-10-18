@@ -1,1 +1,0 @@
-SELECT id FROM ventes LIMIT 1 LIMIT 2;

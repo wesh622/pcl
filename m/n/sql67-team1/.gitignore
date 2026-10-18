@@ -1,8 +1,20 @@
-# Construction
-_build/
-/SQL67
+# Artefact de livraison (produit par le pipeline)
+SQL67
 
-# Dossiers générés par SQL67 à côté de chaque <nom>.sql (garder data/)
-/test/F[0-5]/*/
-!/test/F[0-5]/data/
-*.err
+# Sorties Dune / opam
+_build/
+*.install
+
+# Dossiers générés par SQL67 à côté des tests : test/F<n>/<nom>/
+test/F0/*/
+!test/F0/data/
+test/F1/*/
+!test/F1/data/
+test/F2/*/
+!test/F2/data/
+test/F3/*/
+!test/F3/data/
+test/F4/*/
+!test/F4/data/
+test/F5/*/
+!test/F5/data/

@@ -1,1 +1,0 @@
-SELECT c, a, b FROM t ORDER BY a DESC;

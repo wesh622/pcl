@@ -1,4 +1,4 @@
-(* AST SQL67 — fragment F0. *)
+(* AST SQL67 — fragment F0. Types à reprendre/valider par B. *)
 
 type dir = Asc | Desc
 
@@ -10,16 +10,11 @@ type select_item =
   | Star                            (* SELECT * *)
   | Item of expr * string option    (* alias optionnel, avec ou sans AS *)
 
-(* Clé de tri : une colonne (ou un alias), ou une position (ORDER BY 2). *)
-type order_key =
-  | By_expr of expr
-  | By_position of int
-
 type query = {
-  distinct : bool;                  (* SELECT DISTINCT *)
+  distinct : bool;
   select   : select_item list;
   from     : string;                (* Nom de la table. *)
-  order_by : (order_key * dir) list;
+  order_by : (expr * dir) list;
   limit    : int option;
   offset   : int option;
 }

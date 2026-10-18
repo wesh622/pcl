@@ -1,1 +1,0 @@
-SELECT DISTINCT * FROM "notes 2A";

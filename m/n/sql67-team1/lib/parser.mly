@@ -7,26 +7,25 @@
 open Ast
 %}
 
-%token SELECT FROM AS ORDER BY ASC DESC LIMIT OFFSET DISTINCT ALL
+%token SELECT DISTINCT FROM AS ORDER BY ASC DESC LIMIT OFFSET
 %token <string> IDENT
 %token <int> INT
-%token STAR COMMA SEMI EOF
+%token STAR COMMA SEMI EOF MINUS
 
 %start <Ast.query> query
 %%
 
 query:
-  | SELECT distinct select_list FROM from_clause order_by_clause limit_offset SEMI? EOF
+  | SELECT distinct_clause select_list FROM from_clause order_by_clause limit_clause offset_clause SEMI? EOF
       { { distinct = $2;
           select   = List.rev $3;
           from     = $5;
           order_by = $6;
-          limit    = fst $7;
-          offset   = snd $7 } }
+          limit    = $7;
+          offset   = $8 } }
 
-distinct:
+distinct_clause:
   |                               { false }
-  | ALL                           { false }
   | DISTINCT                      { true }
 
 (* Liste de projections : récursion gauche, renversée à la fin. *)
@@ -58,26 +57,20 @@ order_list:
   | order_list COMMA order_item   { $3 :: $1 }
 
 order_item:
-  | order_key                     { ($1, Asc) }   (* ASC par défaut *)
-  | order_key ASC                 { ($1, Asc) }
-  | order_key DESC                { ($1, Desc) }
+  | expr                          { ($1, Asc) }   (* ASC par défaut *)
+  | expr ASC                      { ($1, Asc) }
+  | expr DESC                     { ($1, Desc) }
 
-order_key:
-  | expr                          { By_expr $1 }
-  | INT                           { By_position $1 }   (* ORDER BY 2 *)
+limit_clause:
+  |                               { None }
+  | LIMIT signed_int              { Some $2 }
 
-(* (limit, offset). Acceptés : LIMIT n [OFFSET m], OFFSET m [LIMIT n],
-   et la forme SQLite/MySQL LIMIT m, n (m = offset).
-   À restreindre selon le vote du 16/10 (eltravail.md). *)
-limit_offset:
-  |                                         { (None, None) }
-  | LIMIT signed_int                        { (Some $2, None) }
-  | LIMIT signed_int OFFSET signed_int      { (Some $2, Some $4) }
-  | LIMIT signed_int COMMA signed_int       { (Some $4, Some $2) }
-  | OFFSET signed_int                       { (None, Some $2) }
-  | OFFSET signed_int LIMIT signed_int      { (Some $4, Some $2) }
+offset_clause:
+  |                               { None }
+  | OFFSET signed_int             { Some $2 }
 
-(* Entiers décimaux non négatifs uniquement : « LIMIT -5 » est une erreur
-   de syntaxe (eltravail.md, LIMIT et OFFSET). *)
+(* Le signe est accepté au niveau syntaxique ; B tranche la sémantique
+   (« LIMIT -1 » diffère entre SQLite et PostgreSQL). *)
 signed_int:
   | INT                           { $1 }
+  | MINUS INT                     { - $2 }
