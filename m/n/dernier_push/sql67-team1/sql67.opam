@@ -1,0 +1,12 @@
+opam-version: "2.0"
+synopsis: "Compilateur SQL67 (PCL) : fragment de SQL vers C99"
+maintainer: "sql67-team1"
+depends: [
+  "ocaml" {>= "5.0"}
+  "dune" {>= "3.11"}
+  "menhir" {>= "20211012"}
+]
+build: [
+  ["dune" "subst"] {dev}
+  ["dune" "build" "-p" name "-j" jobs]
+]

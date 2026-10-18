@@ -1,0 +1,1 @@
+SELECT b, a FROM t ORDER BY a;

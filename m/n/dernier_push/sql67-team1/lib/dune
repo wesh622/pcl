@@ -1,0 +1,8 @@
+(library
+ (name sql67))
+
+(ocamllex lexer)
+
+(menhir
+ (modules parser)
+ (flags --strict))
