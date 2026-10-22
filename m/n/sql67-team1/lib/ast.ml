@@ -11,6 +11,7 @@ type select_item =
   | Item of expr * string option    (* alias optionnel, avec ou sans AS *)
 
 type query = {
+  distinct : bool;
   select   : select_item list;
   from     : string;                (* Nom de la table. *)
   order_by : (expr * dir) list;

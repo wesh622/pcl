@@ -1,0 +1,7 @@
+id,nom,commune,cp,capacite,velos_dispo
+1,Place Stanislas,Nancy,54000,20,7
+2,Gare - Thiers,Nancy,54000,30,0
+3,"Brabois, Hôpitaux",Vandœuvre-lès-Nancy,54500,16,12
+4,Saint-Max Mairie,Saint-Max,54130,12,
+5,Laxou Champ-le-Bœuf,Laxou,54520,14,3
+6,Artem,Nancy,54000,18,NC

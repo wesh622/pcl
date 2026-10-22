@@ -7,7 +7,7 @@
 open Ast
 %}
 
-%token SELECT FROM AS ORDER BY ASC DESC LIMIT OFFSET
+%token SELECT DISTINCT FROM AS ORDER BY ASC DESC LIMIT OFFSET
 %token <string> IDENT
 %token <int> INT
 %token STAR COMMA SEMI EOF MINUS
@@ -16,12 +16,17 @@ open Ast
 %%
 
 query:
-  | SELECT select_list FROM from_clause order_by_clause limit_clause offset_clause SEMI? EOF
-      { { select   = List.rev $2;
-          from     = $4;
-          order_by = $5;
-          limit    = $6;
-          offset   = $7 } }
+  | SELECT distinct_clause select_list FROM from_clause order_by_clause limit_clause offset_clause SEMI? EOF
+      { { distinct = $2;
+          select   = List.rev $3;
+          from     = $5;
+          order_by = $6;
+          limit    = $7;
+          offset   = $8 } }
+
+distinct_clause:
+  |                               { false }
+  | DISTINCT                      { true }
 
 (* Liste de projections : récursion gauche, renversée à la fin. *)
 select_list:

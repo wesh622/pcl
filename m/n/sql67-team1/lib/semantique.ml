@@ -65,6 +65,7 @@ let analyse (schema : schema) (q : Ast.query) : (Resolu.query, Error.t) result =
   Ok
     {
       Resolu.table = nom_table;
+      distinct = q.Ast.distinct;
       colonnes;
       sorties;
       tri;

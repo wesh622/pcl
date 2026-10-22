@@ -1,0 +1,583 @@
+# SQL67 — Documentation technique (état actuel, fragment F0)
+
+Ce document décrit le code OCaml du compilateur SQL67 tel qu'il est aujourd'hui dans
+`lib/` et `bin/`. Il ne remplace pas le sujet (`README.md`) ni le contrat de livraison
+(`README_ARTEFACT.md`).
+
+> **À retenir d'abord.** Le projet est aujourd'hui un **front-end** : il sait lire une
+> requête F0 et la vérifier sémantiquement *si on lui fournit un schéma*. Il ne génère
+> **encore aucun code C** et l'exécutable n'appelle que l'analyse syntaxique.
+> Voir la partie 5.
+
+---
+
+## 1. Architecture générale
+
+### 1.1 Ce que doit faire SQL67 (rappel du contrat)
+
+```sh
+SQL67 <nom>.sql <nom>        # écrit des fichiers C + un Makefile dans <nom>/
+make -C <nom>                # produit <nom>/<nom>.out
+<nom>/<nom>.out t1.csv …     # exécute la requête sur les tables CSV
+```
+
+SQL67 est donc un **compilateur SQL → C99**. Les tables CSV ne sont connues qu'à
+l'**exécution** du `.out`, pas à la compilation.
+
+### 1.2 Organisation des fichiers
+
+```
+sql67-team1/
+├── dune-project          projet dune (dune 3.11, extension menhir 2.1)
+├── sql67.opam            dépendances : ocaml ≥ 5.0, dune ≥ 3.11, menhir
+├── bin/
+│   ├── dune              exécutable `main` (public_name sql67), dépend de la lib sql67
+│   └── main.ml           point d'entrée en ligne de commande
+├── lib/                  bibliothèque `sql67` (tous les modules sont exposés en Sql67.X)
+│   ├── dune              ocamllex lexer + menhir parser (--strict)
+│   ├── error.ml          type d'erreur partagé
+│   ├── ast.ml            AST produit par le parser
+│   ├── lexer.mll         analyse lexicale (ocamllex)
+│   ├── parser.mly        grammaire (Menhir)
+│   ├── parse.ml          façade : texte → AST ou erreur
+│   ├── resolu.ml         représentation « résolue » (après sémantique)
+│   └── semantique.ml     analyse sémantique : AST + schéma → requête résolue
+├── test/
+│   ├── F0 … F5/          vides (.gitkeep) — aucun test du projet pour l'instant
+│   └── expl/             exemples de tests cram fournis par le sujet
+├── .gitlab-ci.yml        pipeline : build (dune) → check → translate → …
+└── sql67.yml             image Docker d'exécution de SQL67
+```
+
+### 1.3 Découpage par rôles
+
+Les commentaires du code parlent de trois rôles :
+
+| Rôle | Responsabilité                                   | Fichiers                                   |
+|------|--------------------------------------------------|--------------------------------------------|
+| A    | Front-end : texte SQL → AST, sans exception      | `lexer.mll`, `parser.mly`, `parse.ml`      |
+| B    | Sémantique : AST → requête résolue               | `ast.ml` (à valider), `resolu.ml`, `semantique.ml` |
+| C    | Back-end : génération du C et du Makefile        | **pas encore écrit**                       |
+
+`error.ml` est commun aux trois.
+
+### 1.4 Principe de conception
+
+Chaque étape est une **fonction pure** qui renvoie un `result` :
+
+```
+string ──Parse──▶ (Ast.query, Error.t) result ──Semantique──▶ (Resolu.query, Error.t) result ──(C)──▶ fichiers C
+```
+
+Les exceptions restent internes (`Parser.Error`, `Error.Syntax_error`) et sont
+transformées en `Error.t` par `Parse`. Le chaînage se fait avec `Result.bind`
+(l'opérateur `let*`).
+
+---
+
+## 2. Ordre logique de la chaîne de traitement
+
+```
+                 fichier .sql
+                      │
+                      ▼
+ (0) error.ml   ─ type Error.t, utilisé partout ─────────────────────┐
+                      │                                              │
+ (1) lexer.mll  ─ caractères → tokens (SELECT, IDENT "a", INT 3…)    │
+                      │                                              │
+ (2) parser.mly ─ tokens → arbre de syntaxe                          │
+                      │                                              │
+ (3) ast.ml     ─ définit l'arbre produit par (2)                    │
+                      │                                              │
+     parse.ml   ─ assemble (1)+(2), attrape les erreurs ─▶ Error.t ◀─┤
+                      │  Ast.query                                   │
+                      ▼                                              │
+ (4) resolu.ml  ─ définit la forme « résolue » de la requête         │
+                      │                                              │
+ (5) semantique.ml ─ Ast.query + schéma → Resolu.query ─▶ Error.t ◀──┘
+                      │  Resolu.query
+                      ▼
+     [génération C — rôle C, absent]
+                      │
+                      ▼
+ (6) bin/main.ml ─ lit argv, appelle la chaîne, affiche l'erreur, exit code
+```
+
+**Ordre de lecture conseillé** pour découvrir le code :
+`error.ml` → `ast.ml` → `lexer.mll` → `parser.mly` → `parse.ml` → `resolu.ml` →
+`semantique.ml` → `main.ml`.
+
+> En pratique, `main.ml` ne va aujourd'hui que jusqu'à `parse.ml` : `Semantique`
+> n'est appelé nulle part.
+
+---
+
+## 3. Détail fichier par fichier
+
+### 3.0 `lib/error.ml` — erreurs partagées
+
+**Rôle :** un type d'erreur commun à toutes les étapes.
+
+```ocaml
+type t = { message : string; position : Lexing.position option; exit_code : int }
+exception Syntax_error of t
+val syntax_error   : string -> Lexing.position -> t   (* position connue, exit 2 *)
+val semantic_error : string -> t                      (* pas de position,  exit 2 *)
+```
+
+- **Entrée :** un message (et une position pour les erreurs de syntaxe).
+- **Sortie :** une valeur `Error.t`. Le code de sortie vaut toujours 2 (« requête
+  invalide »).
+- L'exception `Syntax_error` ne sert qu'à faire sortir une erreur du lexer, qui est
+  appelé depuis le parser généré et ne peut donc pas renvoyer un `result`.
+
+### 3.1 `lib/lexer.mll` — analyse lexicale
+
+**Rôle :** découper le texte en tokens.
+
+- **Entrée :** un `Lexing.lexbuf` (le flux de caractères).
+- **Sortie :** `Lexer.token : Lexing.lexbuf -> Parser.token`, appelé token par token
+  par le parser. Les types de tokens viennent de `parser.mly` (`open Parser`).
+
+**Ce qu'il fait :**
+
+| Entrée lue                         | Résultat                                           |
+|------------------------------------|----------------------------------------------------|
+| `\n`                               | `Lexing.new_line` (numéros de ligne justes), ignoré |
+| espaces, `\t`, `\r`                | ignorés                                            |
+| `-- …` jusqu'à la fin de ligne     | commentaire, ignoré                                |
+| `*` `,` `;` `-`                    | `STAR` `COMMA` `SEMI` `MINUS`                      |
+| `[0-9]+`                           | `INT n` ; erreur si l'entier dépasse `max_int`     |
+| `[A-Za-z_][A-Za-z0-9_]*`           | mot-clé si c'en est un (insensible à la casse), sinon `IDENT s` (casse conservée) |
+| fin de fichier                     | `EOF`                                              |
+| autre caractère                    | `raise (Error.Syntax_error …)` avec la position    |
+
+Mots-clés reconnus (table `keyword`) : `select from as order by asc desc limit offset`.
+
+### 3.2 `lib/parser.mly` — grammaire (Menhir)
+
+**Rôle :** vérifier que la suite de tokens forme une requête F0 et construire l'AST.
+
+- **Entrée :** une fonction de lexing (`Lexer.token`) et un `lexbuf`.
+- **Sortie :** `Parser.query : (Lexing.lexbuf -> token) -> Lexing.lexbuf -> Ast.query`.
+  En cas d'erreur : exception `Parser.Error`.
+
+**Grammaire acceptée :**
+
+```
+query        ::= SELECT select_list FROM IDENT order_by? limit? offset? ';'? EOF
+select_list  ::= select_item (',' select_item)*
+select_item  ::= '*' | expr | expr AS IDENT | expr IDENT        -- alias implicite
+expr         ::= IDENT
+order_by     ::= ORDER BY order_item (',' order_item)*
+order_item   ::= expr | expr ASC | expr DESC                    -- ASC par défaut
+limit        ::= LIMIT signed_int
+offset       ::= OFFSET signed_int
+signed_int   ::= INT | '-' INT
+```
+
+Les listes sont construites en récursion gauche (`$3 :: $1`) puis renversées avec
+`List.rev`, ce qui est l'idiome classique pour un parser LR.
+Le signe négatif est accepté ici ; c'est la sémantique qui décide quoi en faire.
+
+### 3.3 `lib/ast.ml` — arbre de syntaxe abstraite
+
+**Rôle :** décrire la requête telle qu'elle a été écrite, sans aucune vérification.
+
+```ocaml
+type dir = Asc | Desc
+type expr = Column of string
+type select_item = Star | Item of expr * string option   (* alias éventuel *)
+type query = {
+  select   : select_item list;
+  from     : string;
+  order_by : (expr * dir) list;
+  limit    : int option;     (* peut être négatif *)
+  offset   : int option;     (* peut être négatif *)
+}
+```
+
+Aucune fonction : uniquement des types, produits par `parser.mly`, consommés par
+`semantique.ml`.
+
+### 3.4 `lib/parse.ml` — façade du front-end
+
+**Rôle :** cacher lexer et parser derrière une interface sans exception.
+
+```ocaml
+val parse_string : ?filename:string -> string -> (Ast.query, Error.t) result
+val parse_file   : string -> (Ast.query, Error.t) result
+```
+
+- **Entrée :** le texte SQL (ou un chemin de fichier).
+- **Traitement :** crée un `lexbuf`, lui donne le nom du fichier (pour les messages),
+  lance `Parser.query Lexer.token`, et convertit :
+  - `Parser.Error` → `Error.syntax_error "syntax error"` à la position du dernier token lu ;
+  - `Error.Syntax_error e` (venant du lexer) → `Error e`.
+- **Sortie :** `Ok ast` ou `Error e`.
+
+### 3.5 `lib/resolu.ml` — requête résolue
+
+**Rôle :** la forme de la requête *après* vérification, prête pour la génération de
+code. Plus aucun nom à chercher : tout est en **indices de colonnes**.
+
+```ocaml
+type sortie = { nom : string; col : int }   (* nom affiché, indice dans la table *)
+type query = {
+  table    : string;                 (* nom canonique de la table *)
+  colonnes : string list;            (* toutes les colonnes de la table *)
+  sorties  : sortie list;            (* `*` développé, alias appliqués *)
+  tri      : (int * Ast.dir) list;   (* indices de colonnes DE LA TABLE *)
+  limit    : int option;             (* None = pas de limite ; jamais négatif *)
+  offset   : int;                    (* toujours ≥ 0 *)
+}
+```
+
+C'est la bonne interface pour le rôle C : un générateur de code n'aura qu'à lire ces
+champs.
+
+### 3.6 `lib/semantique.ml` — analyse sémantique
+
+**Rôle :** vérifier que la requête a un sens par rapport au schéma, et la traduire en
+`Resolu.query`.
+
+```ocaml
+type schema = (string * string list) list   (* (nom de table, colonnes) *)
+val analyse : schema -> Ast.query -> (Resolu.query, Error.t) result
+```
+
+- **Entrée :** un schéma (liste de tables avec leurs colonnes) et un `Ast.query`.
+- **Traitement (`analyse`) :**
+  1. cherche la table du `FROM` dans le schéma (insensible à la casse) → sinon
+     `table inconnue : …` ;
+  2. `resoudre_select` : `*` devient toutes les colonnes ; chaque `Column c` devient
+     `{ nom = alias ou nom de la colonne ; col = indice }` → sinon `colonne inconnue : …` ;
+  3. `resoudre_tri` : chaque colonne du `ORDER BY` est cherchée **d'abord parmi les
+     noms de sortie (alias)**, puis parmi les colonnes de la table → sinon
+     `colonne inconnue dans ORDER BY : …` ;
+  4. normalise `LIMIT` (négatif → `None`, pas de limite) et `OFFSET` (négatif ou
+     absent → `0`), comme SQLite.
+- **Sortie :** `Ok Resolu.query` ou la **première** erreur rencontrée.
+- **Utilitaires :** `egal` (comparaison insensible à la casse), `index_de`,
+  `map_result` (un `List.map` qui s'arrête à la première erreur).
+
+### 3.7 `bin/main.ml` — point d'entrée
+
+**Rôle :** programme en ligne de commande.
+
+- **Entrée :** `Sys.argv` = `<fichier.sql> <dossier>`.
+- **Traitement :** vérifie le nombre d'arguments, appelle `Parse.parse_file`.
+- **Sortie :**
+  - succès → affiche `parse OK`, code 0 ;
+  - erreur → affiche `fichier:ligne:colonne: message` sur stderr, code 2 ;
+  - mauvais nombre d'arguments → message d'usage, code 2.
+- Le second argument (`<dossier>`) n'est **pas utilisé** pour l'instant.
+
+---
+
+## 4. Exemples pas à pas : ce qui arrive à une requête
+
+Cette partie suit des requêtes concrètes à travers toute la chaîne. Les traces ont été
+déduites du code (pas d'exécution réelle).
+
+**Schéma utilisé pour l'analyse sémantique** (dans le code, c'est l'argument `schema`
+de `Semantique.analyse`) :
+
+```ocaml
+let schema = [ ("personnes", ["id"; "nom"; "age"]) ]
+```
+
+**Données d'exemple** (`personnes.csv`), utilisées seulement pour montrer le résultat
+attendu à la fin :
+
+```
+id,nom,age
+1,Alice,30
+2,Bob,25
+3,Chloe,35
+4,David,28
+```
+
+**Comment lire les positions :** `a.sql:1:27` = fichier `a.sql`, ligne 1, colonne 27
+(la première colonne est 1). C'est ce qu'affiche `show_position` dans `main.ml`.
+
+---
+
+### 4.1 Requête valide complète
+
+```sql
+SELECT nom AS n, age FROM Personnes ORDER BY n DESC, age LIMIT 2 OFFSET 1;
+```
+
+#### Étape 1 — Lexer (`lexer.mll`)
+
+Le parser demande les tokens **un par un** à `Lexer.token`. Le lexer avance dans le
+texte, ignore les espaces, et à chaque mot regarde la table `keyword` (après
+`String.lowercase_ascii`) :
+
+| Texte lu     | Règle déclenchée                  | Token produit       |
+|--------------|-----------------------------------|---------------------|
+| `SELECT`     | `ident` → mot-clé `"select"`      | `SELECT`            |
+| `nom`        | `ident` → pas un mot-clé          | `IDENT "nom"`       |
+| `AS`         | `ident` → mot-clé                 | `AS`                |
+| `n`          | `ident`                           | `IDENT "n"`         |
+| `,`          | `','`                             | `COMMA`             |
+| `age`        | `ident`                           | `IDENT "age"`       |
+| `FROM`       | `ident` → mot-clé                 | `FROM`              |
+| `Personnes`  | `ident` (casse **conservée**)     | `IDENT "Personnes"` |
+| `ORDER`      | mot-clé                           | `ORDER`             |
+| `BY`         | mot-clé                           | `BY`                |
+| `n`          | `ident`                           | `IDENT "n"`         |
+| `DESC`       | mot-clé                           | `DESC`              |
+| `,`          |                                   | `COMMA`             |
+| `age`        |                                   | `IDENT "age"`       |
+| `LIMIT`      | mot-clé                           | `LIMIT`             |
+| `2`          | `digit+` → `int_of_string_opt`    | `INT 2`             |
+| `OFFSET`     | mot-clé                           | `OFFSET`            |
+| `1`          | `digit+`                          | `INT 1`             |
+| `;`          | `';'`                             | `SEMI`              |
+| fin du texte | `eof`                             | `EOF`               |
+
+#### Étape 2 — Parser (`parser.mly`)
+
+Menhir reconnaît la règle principale :
+
+```
+SELECT select_list FROM from_clause order_by_clause limit_clause offset_clause SEMI? EOF
+```
+
+Comment chaque morceau est construit :
+
+- **`select_list`** (récursion gauche, la liste se construit à l'envers) :
+  1. `nom AS n` → règle `expr AS IDENT` → `Item (Column "nom", Some "n")` →
+     liste `[Item(nom,n)]`
+  2. `, age` → règle `expr` seule → `Item (Column "age", None)` → règle
+     `select_list COMMA select_item` → `$3 :: $1` = `[Item(age); Item(nom,n)]`
+  3. Dans la règle `query`, `List.rev` remet la liste dans l'ordre :
+     `[Item(nom,n); Item(age)]`
+- **`from_clause`** → `"Personnes"`
+- **`order_by_clause`** → `n DESC` donne `(Column "n", Desc)`, `age` sans direction
+  donne `(Column "age", Asc)` (ASC par défaut). Même mécanisme : construite à l'envers,
+  puis `List.rev`.
+- **`limit_clause`** → `LIMIT signed_int` → `Some 2`
+- **`offset_clause`** → `Some 1`
+- **`SEMI?`** → le `;` est consommé (il est facultatif), puis `EOF`.
+
+#### Étape 3 — AST obtenu (`ast.ml`), renvoyé par `Parse.parse_file`
+
+```ocaml
+Ok {
+  select   = [ Item (Column "nom", Some "n");
+               Item (Column "age", None) ];
+  from     = "Personnes";
+  order_by = [ (Column "n", Desc);
+               (Column "age", Asc) ];
+  limit    = Some 2;
+  offset   = Some 1;
+}
+```
+
+À ce stade, **rien n'a été vérifié** : on ne sait pas encore si `Personnes`, `nom`
+ou `n` existent.
+
+#### Étape 4 — Sémantique (`semantique.ml`, fonction `analyse`)
+
+1. **Recherche de la table** : `List.find_opt` compare `"Personnes"` à chaque nom du
+   schéma avec `egal` (comparaison en minuscules) → trouve
+   `("personnes", ["id"; "nom"; "age"])`.
+   Le nom gardé est celui **du schéma** : `"personnes"`.
+   Indices des colonnes : `id` = 0, `nom` = 1, `age` = 2.
+
+2. **`resoudre_select`** — chaque élément du `SELECT` devient une sortie :
+
+   | Élément de l'AST                 | `index_de`        | Nom affiché                    | Sortie                    |
+   |----------------------------------|-------------------|--------------------------------|---------------------------|
+   | `Item (Column "nom", Some "n")`  | `nom` → `Some 1`  | l'alias `"n"`                  | `{ nom = "n";   col = 1 }` |
+   | `Item (Column "age", None)`      | `age` → `Some 2`  | pas d'alias → `List.nth colonnes 2` = `"age"` | `{ nom = "age"; col = 2 }` |
+
+3. **`resoudre_tri`** — pour chaque colonne du `ORDER BY`, on cherche **d'abord dans
+   les sorties** (donc les alias), **puis** dans les colonnes de la table :
+
+   | Élément            | Trouvé dans les sorties ?          | Résultat     |
+   |--------------------|------------------------------------|--------------|
+   | `(Column "n", Desc)`   | oui : `{nom="n"; col=1}`       | `(1, Desc)`  |
+   | `(Column "age", Asc)`  | oui : `{nom="age"; col=2}`     | `(2, Asc)`   |
+
+   `n` n'est **pas** une colonne de la table : sans la recherche dans les alias, ce
+   `ORDER BY` échouerait.
+
+4. **Normalisation** : `normaliser_limit (Some 2)` = `Some 2` ;
+   `normaliser_offset (Some 1)` = `1`.
+
+#### Étape 5 — Requête résolue (`resolu.ml`), renvoyée par `Semantique.analyse`
+
+```ocaml
+Ok {
+  table    = "personnes";
+  colonnes = ["id"; "nom"; "age"];
+  sorties  = [ { nom = "n";   col = 1 };
+               { nom = "age"; col = 2 } ];
+  tri      = [ (1, Desc); (2, Asc) ];
+  limit    = Some 2;
+  offset   = 1;
+}
+```
+
+Plus aucun nom n'est à chercher : tout est en indices. C'est ce que le futur générateur
+de C devra traduire.
+
+#### Étape 6 — `main.ml` aujourd'hui
+
+`main` n'appelle que `Parse.parse_file`, donc les étapes 4 et 5 ne sont **pas
+exécutées** par le programme. Il affiche :
+
+```
+$ sql67 a.sql a
+parse OK                 (code de retour 0)
+```
+
+#### Résultat attendu (ce que le C généré devra produire)
+
+Sur `personnes.csv`, la requête doit :
+1. trier par `nom` décroissant (colonne 1), puis par `age` croissant (colonne 2) :
+   David, Chloe, Bob, Alice ;
+2. sauter 1 ligne (`OFFSET 1`) : Chloe, Bob, Alice ;
+3. en garder 2 (`LIMIT 2`) : Chloe, Bob ;
+4. n'afficher que les colonnes 1 et 2, sous les noms `n` et `age`.
+
+```
+n,age
+Chloe,35
+Bob,25
+```
+
+---
+
+### 4.2 Autres requêtes valides (cas particuliers)
+
+| Requête | Ce qui se passe de particulier | Résultat de `Semantique` |
+|---|---|---|
+| `select * from personnes` | mots-clés en minuscules acceptés ; pas de `;` (il est facultatif) ; `Star` est développé en toutes les colonnes | `sorties = [{id,0}; {nom,1}; {age,2}]`, `tri = []`, `limit = None`, `offset = 0` |
+| `SELECT nom n FROM personnes` | alias **sans** `AS` (règle `expr IDENT`) | `sorties = [{nom="n"; col=1}]` |
+| `SELECT nom FROM personnes ORDER BY age` | `age` n'est pas dans le `SELECT` : pas trouvé dans les sorties, donc cherché dans la table | `tri = [(2, Asc)]` |
+| `SELECT NOM FROM PERSONNES` | identifiants comparés sans tenir compte de la casse (`egal`) ; le nom affiché reste celui du schéma | `sorties = [{nom="nom"; col=1}]`, `table = "personnes"` |
+| `SELECT *, nom FROM personnes` | `*` peut être mélangé à d'autres colonnes | 4 sorties : `id, nom, age, nom` |
+| `SELECT nom FROM personnes LIMIT -1 OFFSET -3` | le parser accepte le signe (`MINUS INT` → `-1`) ; la sémantique applique le choix SQLite | `limit = None` (pas de limite), `offset = 0` |
+| `SELECT nom -- commentaire`<br>`FROM personnes;` | le commentaire `--` est sauté ; `\n` incrémente le numéro de ligne | comme `SELECT nom FROM personnes` |
+
+---
+
+### 4.3 Requêtes invalides
+
+Une requête peut être refusée à **trois endroits** différents. Le point important est
+**qui détecte l'erreur, comment elle remonte, et ce qui est affiché**.
+
+#### a) Erreur lexicale : caractère inconnu
+
+```sql
+SELECT nom, @age FROM personnes;
+```
+
+1. Le lexer produit `SELECT`, `IDENT "nom"`, `COMMA`.
+2. Il tombe sur `@` : aucune règle ne correspond, sauf la dernière (`_ as c`).
+3. Cette règle appelle `syntax_error`, qui **lève l'exception**
+   `Error.Syntax_error { message = "unexpected character '@'"; position = Some (ligne 1, col 13); exit_code = 2 }`.
+4. L'exception traverse le parser Menhir (qui était en train de demander un token) et
+   est **rattrapée dans `Parse.parse_string`** par `| Error.Syntax_error e -> Error e`.
+5. `main` reçoit `Error e` et affiche :
+
+```
+a.sql:1:13: unexpected character '@'      (sur stderr, code de retour 2)
+```
+
+Même mécanisme pour un entier trop grand :
+`SELECT nom FROM personnes LIMIT 99999999999999999999` → `int_of_string_opt` renvoie
+`None` → `integer literal out of range`.
+
+#### b) Erreur de syntaxe : tokens dans un ordre interdit
+
+```sql
+SELECT FROM personnes;
+```
+
+1. Le lexer fonctionne normalement : `SELECT`, puis `FROM`.
+2. Après `SELECT`, la grammaire attend un `select_item` (`*` ou un `IDENT`). Elle
+   reçoit `FROM` : aucune règle ne permet de continuer.
+3. Menhir **lève `Parser.Error`** (une exception sans message ni position).
+4. `Parse.parse_string` la rattrape et fabrique l'erreur lui-même, avec la position
+   du **dernier token lu** (`Lexing.lexeme_start_p lexbuf`), c'est-à-dire `FROM` :
+
+```
+a.sql:1:8: syntax error      (code 2)
+```
+
+Autre cas : **l'ordre des clauses est imposé** par la règle `query`.
+
+```sql
+SELECT nom FROM personnes LIMIT 5 ORDER BY nom;
+```
+
+Après `LIMIT 5`, la grammaire n'accepte plus que `OFFSET`, `;` ou la fin. Le token
+`ORDER` (colonne 35) provoque `Parser.Error` → `a.sql:1:35: syntax error`.
+
+#### c) Cas piège : un mot-clé non reconnu (`WHERE`)
+
+```sql
+SELECT nom FROM personnes WHERE age > 30;
+```
+
+On pourrait croire que l'erreur vient du `>` (caractère inconnu du lexer). En fait :
+
+1. `WHERE` n'est pas dans la table `keyword` → le lexer le renvoie comme
+   `IDENT "WHERE"`, un identifiant ordinaire.
+2. Après `FROM personnes`, le parser n'attend que `ORDER`, `LIMIT`, `OFFSET`, `;`
+   ou la fin. Il reçoit un `IDENT` → `Parser.Error`.
+3. Le parser s'arrête **avant** que le lexer ait lu `>` : le lexer n'est appelé qu'à
+   la demande, token par token.
+
+```
+a.sql:1:27: syntax error      (position de WHERE, code 2)
+```
+
+Pour gérer `WHERE` au fragment suivant, il faudra donc **à la fois** l'ajouter dans
+`keyword` (lexer) et écrire une règle dans `parser.mly`.
+
+#### d) Erreurs sémantiques : syntaxe correcte, sens incorrect
+
+Ces requêtes **passent le parser** (on obtient un AST) mais `Semantique.analyse`
+renvoie `Error` :
+
+| Requête | Étape qui échoue | Erreur renvoyée |
+|---|---|---|
+| `SELECT nom FROM employes;` | recherche de la table (étape 1 d'`analyse`) | `table inconnue : employes` |
+| `SELECT salaire FROM personnes;` | `resoudre_select` : `index_de "salaire"` = `None` | `colonne inconnue : salaire` |
+| `SELECT nom AS n FROM personnes ORDER BY x;` | `resoudre_tri` : `x` n'est ni un alias ni une colonne | `colonne inconnue dans ORDER BY : x` |
+| `SELECT salaire, bonus FROM personnes;` | `map_result` s'arrête à la **première** erreur | seulement `colonne inconnue : salaire` |
+
+Ce qui change par rapport aux erreurs syntaxiques :
+
+- l'erreur est construite avec `Error.semantic_error`, **sans position**
+  (l'AST ne garde pas les positions), donc `main` afficherait seulement
+  `colonne inconnue : salaire`, sans `a.sql:1:8:` ;
+- aucune exception n'est utilisée : l'erreur remonte par les `let*`
+  (`Result.bind`), qui arrêtent le calcul au premier `Error`.
+
+> **Attention, comportement actuel :** comme `main.ml` n'appelle pas `Semantique`,
+> ces quatre requêtes affichent aujourd'hui `parse OK` avec le code de retour 0.
+> L'erreur n'est détectée que si on appelle `Semantique.analyse` à la main (par
+> exemple depuis `dune utop`).
+
+---
+
+### 4.4 Récapitulatif : qui détecte quoi
+
+| Type d'erreur | Détectée par | Mécanisme | Position dans le message ? | Affichage actuel |
+|---|---|---|---|---|
+| Caractère inconnu, entier trop grand | `lexer.mll` | exception `Error.Syntax_error`, rattrapée dans `parse.ml` | oui | `fichier:l:c: message`, code 2 |
+| Mauvais ordre de tokens, clause manquante | `parser.mly` | exception `Parser.Error`, transformée dans `parse.ml` | oui (dernier token lu) | `fichier:l:c: syntax error`, code 2 |
+| Table / colonne inconnue | `semantique.ml` | `Error` renvoyé par `let*` | non | **non détectée** (`main` ne fait pas l'analyse) |
+| Requête correcte | — | `Ok` à chaque étape | — | `parse OK`, code 0 |
+
+Rappel : d'après le contrat du sujet, à terme SQL67 ne devra **pas** s'arrêter avec
+le code 2. Il devra générer un programme C qui affiche l'erreur quand on l'exécute
+(voir 5.2).

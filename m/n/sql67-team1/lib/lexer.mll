@@ -13,6 +13,7 @@ let syntax_error lexbuf message =
 
 let keyword = function
   | "select" -> Some SELECT
+  | "distinct" -> Some DISTINCT
   | "from"   -> Some FROM
   | "as"     -> Some AS
   | "order"  -> Some ORDER
@@ -40,9 +41,17 @@ rule token = parse
       match int_of_string_opt s with
       | Some n -> INT n
       | None -> syntax_error lexbuf "integer literal out of range" }
+  | '"'                   { quoted_ident (Buffer.create 16) lexbuf }    
   | ident as s            {
       match keyword (String.lowercase_ascii s) with
       | Some tok -> tok
       | None -> IDENT s }
   | eof                   { EOF }
   | _ as c                { syntax_error lexbuf (Printf.sprintf "unexpected character %C" c) }
+and quoted_ident buf = parse
+  | "\"\""                { Buffer.add_char buf '"'; quoted_ident buf lexbuf }
+  | '"'                   { IDENT (Buffer.contents buf) }
+  | '\n'                  { Lexing.new_line lexbuf; Buffer.add_char buf '\n';
+                            quoted_ident buf lexbuf }
+  | eof                   { syntax_error lexbuf "unterminated quoted identifier" }
+  | _ as c                { Buffer.add_char buf c; quoted_ident buf lexbuf }
