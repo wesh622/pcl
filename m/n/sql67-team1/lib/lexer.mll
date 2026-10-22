@@ -43,14 +43,17 @@ rule token = parse
       | None -> syntax_error lexbuf "integer literal out of range" }
   | '"'                   { quoted_ident (Buffer.create 16) lexbuf }    
   | ident as s            {
-      match keyword (String.lowercase_ascii s) with
+      (* Identifiant simple : insensible à la casse, donc ramené en minuscules
+         (comme PostgreSQL). *)
+      let s = String.lowercase_ascii s in
+      match keyword s with
       | Some tok -> tok
       | None -> IDENT s }
   | eof                   { EOF }
   | _ as c                { syntax_error lexbuf (Printf.sprintf "unexpected character %C" c) }
 and quoted_ident buf = parse
   | "\"\""                { Buffer.add_char buf '"'; quoted_ident buf lexbuf }
-  | '"'                   { IDENT (Buffer.contents buf) }
+  | '"'                   { QIDENT (Buffer.contents buf) }  (* sensible à la casse *)
   | '\n'                  { Lexing.new_line lexbuf; Buffer.add_char buf '\n';
                             quoted_ident buf lexbuf }
   | eof                   { syntax_error lexbuf "unterminated quoted identifier" }

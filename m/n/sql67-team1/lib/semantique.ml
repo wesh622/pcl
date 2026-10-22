@@ -4,8 +4,9 @@ let ( let* ) = Result.bind
 
 let erreur msg = Error (Error.semantic_error msg)
 
-(* Les identifiants SQL sont insensibles à la casse. *)
-let egal a b = String.lowercase_ascii a = String.lowercase_ascii b
+(* Les identifiants arrivent déjà normalisés par le lexer (simples en
+   minuscules, délimités tels quels) : la comparaison est exacte. *)
+let egal a b = String.equal a b
 
 let index_de nom colonnes =
   let rec aux i = function

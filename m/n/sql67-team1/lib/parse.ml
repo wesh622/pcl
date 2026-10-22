@@ -12,8 +12,13 @@ let parse_string ?(filename = "<string>") (src : string) :
 
 let parse_file (path : string) : (Ast.query, Error.t) result =
   try
-    In_channel.with_open_bin path (fun ch ->
-        parse_string ~filename:path (In_channel.input_all ch))
+    let ch = open_in_bin path in
+    let src =
+      Fun.protect
+        ~finally:(fun () -> close_in_noerr ch)
+        (fun () -> really_input_string ch (in_channel_length ch))
+    in
+    parse_string ~filename:path src
   with Sys_error message ->
     Error {
       message = Printf.sprintf "cannot read SQL file %S: %s" path message;

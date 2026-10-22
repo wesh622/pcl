@@ -11,11 +11,14 @@
    - [Ok q]    : main.c reçoit les CSV en arguments (./x.out t1.csv ...), choisit
                  celui dont le nom (sans .csv) est la table, et affiche un CSV
                  (en-tête + lignes) après DISTINCT / ORDER BY / OFFSET / LIMIT.
-                 Erreurs d'exécution : "Error: ..." puis exit(1)
-                 (no such table, no such column, invalid CSV file).
-   - [Error e] : main.c affiche "Error: <message>" puis exit(e.exit_code)
-                 (2 pour une requête invalide). Un Makefile est généré dans
-                 les deux cas. *)
+                 Erreurs d'exécution sur stderr : "Error: ..." puis exit(1)
+                 (no such table, duplicate table, no such column, invalid
+                 CSV file). Tous les CSV passés sont validés avant toute
+                 écriture (« total eager validation », &11).
+                 [./x.out --check-valid] : exit(0).
+   - [Error e] : main.c n'écrit rien sur stdout, affiche "Error: <message>"
+                 sur stderr puis exit(10) (&12) ; avec --check-valid, exit(1)
+                 sans rien écrire. Un Makefile est généré dans les deux cas. *)
 
 (* ------------------------------------------------------------------ *)
 (* Utilitaires                                                         *)
@@ -60,9 +63,12 @@ let c_of_error (e : Error.t) =
       "#include <stdio.h>";
       "#include <stdlib.h>";
       "";
-      "int main(void) {";
-      Printf.sprintf "  printf(\"Error: %%s\\n\", %s);" (c_string e.message);
-      Printf.sprintf "  exit(%d);" (if e.exit_code = 0 then 2 else e.exit_code);
+      "#include <string.h>";
+      "";
+      "int main(int argc, char **argv) {";
+      "  if (argc > 1 && strcmp(argv[1], \"--check-valid\") == 0) return 1;";
+      Printf.sprintf "  fprintf(stderr, \"Error: %%s\\n\", %s);" (c_string e.message);
+      "  return 10;";
       "}";
       "" ]
 
@@ -80,20 +86,19 @@ typedef struct {
 } row_t;
 
 typedef struct {
-  char **v;     /* champs de l'enregistrement courant */
+  char **v;     /* champs de l'enregistrement courant (NULL : valeur null) */
   size_t n, cap;
 } line_t;
 
 typedef struct {
-  int cls;        /* 0 vide, 1 entier, 2 reel, 3 texte */
+  int cls;        /* 0 null, 1 entier, 2 reel, 3 texte */
   long long i;
   double d;
   const char *s;
 } sortkey_t;
 
-static char EMPTY[1] = "";
-
-static char **g_cells; /* cellules de toutes les lignes, g_hn par ligne */
+static char **g_cells; /* cellules de toutes les lignes, g_hn par ligne ;
+                          NULL represente la valeur null */
 static size_t g_hn;    /* nombre de colonnes de l'en-tete */
 static int *g_ocol;    /* colonne source de chaque sortie */
 static size_t g_nout;  /* nombre de sorties */
@@ -109,37 +114,67 @@ static void *xrealloc(void *p, size_t n) {
   return q;
 }
 
+static void fail(const char *fmt, const char *arg) {
+  fprintf(stderr, "Error: ");
+  fprintf(stderr, fmt, arg);
+  fputc('\n', stderr);
+  exit(1);
+}
+
 static const char *base_name(const char *p) {
   const char *s = strrchr(p, '/');
   return s ? s + 1 : p;
 }
 
-static int ieq_n(const char *a, const char *b, size_t n) {
-  size_t k;
-  for (k = 0; k < n; k++) {
-    int x = (unsigned char)a[k], y = (unsigned char)b[k];
-    if (x >= 'A' && x <= 'Z') x += 32;
-    if (y >= 'A' && y <= 'Z') y += 32;
-    if (x != y) return 0;
-    if (x == 0) return 1;
+static int is_blank(char c) { return c == ' ' || c == '\t'; }
+
+/* Vrai si s[0..n) est un nombre : signe optionnel, chiffres, '.' et
+   exposant optionnels, au moins un chiffre dans la mantisse. *isint dit s'il
+   s'agit d'un entier (pas de '.' ni d'exposant). */
+static int is_number(const char *s, size_t n, int *isint) {
+  size_t k = 0, digits = 0;
+  *isint = 1;
+  if (k < n && (s[k] == '+' || s[k] == '-')) k++;
+  while (k < n && s[k] >= '0' && s[k] <= '9') k++, digits++;
+  if (k < n && s[k] == '.') {
+    *isint = 0;
+    k++;
+    while (k < n && s[k] >= '0' && s[k] <= '9') k++, digits++;
   }
-  return 1;
+  if (!digits) return 0;
+  if (k < n && (s[k] == 'e' || s[k] == 'E')) {
+    size_t e = 0;
+    *isint = 0;
+    k++;
+    if (k < n && (s[k] == '+' || s[k] == '-')) k++;
+    while (k < n && s[k] >= '0' && s[k] <= '9') k++, e++;
+    if (!e) return 0;
+  }
+  return k == n;
 }
 
-/* Egalite insensible a la casse (identifiants SQL). */
-static int ieq(const char *a, const char *b) {
-  size_t la = strlen(a);
-  return la == strlen(b) && ieq_n(a, b, la);
+/* Typage d'un champ de donnees [start, w) :
+   - non delimite et vide (ou seulement des espaces) : null ;
+   - nombre borde d'espaces : les espaces sont retires ;
+   - sinon : texte, conserve tel quel (espaces compris). */
+static char *norm_field(char *start, char *w, int quoted) {
+  char *a = start, *b = w;
+  int isint;
+  while (a < b && is_blank(*a)) a++;
+  while (b > a && is_blank(b[-1])) b--;
+  if (a == b && !quoted) return NULL;
+  if (a != b && (a != start || b != w) && is_number(a, (size_t)(b - a), &isint)) {
+    *b = '\0';
+    return a;
+  }
+  return start;
 }
 
 static char *read_all(const char *path, size_t *len) {
   FILE *fp = fopen(path, "rb");
   size_t cap = 4096, n = 0, r;
   char *buf;
-  if (!fp) {
-    printf("Error: cannot open file %s\n", path);
-    exit(1);
-  }
+  if (!fp) fail("cannot open file %s", base_name(path));
   buf = (char *)xrealloc(NULL, cap);
   while ((r = fread(buf + n, 1, cap - n, fp)) > 0) {
     n += r;
@@ -155,17 +190,16 @@ static char *read_all(const char *path, size_t *len) {
   return buf;
 }
 
-/* Fin de champ : ',', fin de ligne (\n ou \r\n) ou fin de fichier. */
-static int is_sep(const char *buf, size_t pos, size_t len) {
-  return buf[pos] == ',' || buf[pos] == '\n' ||
-         (buf[pos] == '\r' && pos + 1 < len && buf[pos + 1] == '\n');
-}
+/* Fin de champ : ',', fin de ligne (\n, \r ou \r\n) ou fin de fichier. */
+static int is_sep(char c) { return c == ',' || c == '\n' || c == '\r'; }
 
 /* Lit l'enregistrement suivant (RFC 4180, strict). Les champs sont ecrits
-   en place dans [buf]. Retourne 1 si un enregistrement a ete lu, 0 en fin de
-   fichier, -1 si le CSV est invalide (guillemet non ferme, texte apres un
-   guillemet fermant, guillemet dans un champ non delimite). */
-static int next_record(char *buf, size_t len, size_t *ppos, line_t *ln) {
+   en place dans [buf] ; si [data], ils sont types (cf. norm_field), sinon
+   (en-tete) conserves tels quels. Retourne 1 si un enregistrement a ete lu,
+   0 en fin de fichier, -1 si le CSV est invalide (guillemet non ferme, texte
+   apres un guillemet fermant, guillemet dans un champ non delimite). */
+static int next_record(char *buf, size_t len, size_t *ppos, line_t *ln,
+                       int data) {
   size_t pos = *ppos;
   int eol = 0;
 
@@ -173,9 +207,10 @@ static int next_record(char *buf, size_t len, size_t *ppos, line_t *ln) {
   ln->n = 0;
   while (!eol) {
     char *start = buf + pos, *w = start;
-    int d; /* terminateur : ',', '\n', '\r' ou -1 (fin de fichier) */
+    int d, quoted = 0; /* d : ',', '\n', '\r' ou -1 (fin de fichier) */
 
     if (pos < len && buf[pos] == '"') {
+      quoted = 1;
       pos++;
       for (;;) {
         if (pos >= len) return -1; /* guillemet non ferme */
@@ -191,9 +226,9 @@ static int next_record(char *buf, size_t len, size_t *ppos, line_t *ln) {
           *w++ = buf[pos++];
         }
       }
-      if (pos < len && !is_sep(buf, pos, len)) return -1;
+      if (pos < len && !is_sep(buf[pos])) return -1;
     } else {
-      while (pos < len && !is_sep(buf, pos, len)) {
+      while (pos < len && !is_sep(buf[pos])) {
         if (buf[pos] == '"') return -1;
         *w++ = buf[pos++];
       }
@@ -205,53 +240,48 @@ static int next_record(char *buf, size_t len, size_t *ppos, line_t *ln) {
       ln->cap = ln->cap ? ln->cap * 2 : 16;
       ln->v = (char **)xrealloc(ln->v, ln->cap * sizeof(char *));
     }
-    ln->v[ln->n++] = start;
+    ln->v[ln->n++] = data ? norm_field(start, w, quoted) : start;
 
     if (d == ',') {
       pos++;
     } else {
       eol = 1;
-      if (d == '\r') pos += 2;
-      else if (d == '\n') pos++;
+      if (d == '\r') {
+        pos++;
+        if (pos < len && buf[pos] == '\n') pos++;
+      } else if (d == '\n') {
+        pos++;
+      }
     }
   }
   *ppos = pos;
   return 1;
 }
 
-/* Classe une valeur pour le tri : vide < nombre < texte. Les entiers sont
-   compares exactement (int64), les autres nombres en double. */
+/* Classe une valeur pour le tri : null < nombre < texte. Les entiers sont
+   compares exactement (int64, ecretes s'ils debordent), les autres nombres
+   en double. Les nombres sont deja debarrasses de leurs espaces. */
 static void make_key(const char *s, sortkey_t *k) {
-  const char *p;
-  char *end;
-  int isint = 1;
+  int isint;
   k->s = s;
   k->i = 0;
   k->d = 0;
-  if (!*s) {
+  if (!s) {
     k->cls = 0;
     return;
   }
-  for (p = s; *p; p++) {
-    int digit = *p >= '0' && *p <= '9';
-    if (!(digit || *p == '+' || *p == '-' || *p == '.' || *p == 'e' ||
-          *p == 'E')) {
-      k->cls = 3;
-      return;
-    }
-    if (!(digit || ((*p == '+' || *p == '-') && p == s))) isint = 0;
+  if (!is_number(s, strlen(s), &isint)) {
+    k->cls = 3;
+    return;
   }
   if (isint) {
-    errno = 0;
-    k->i = strtoll(s, &end, 10);
-    if (end != s && *end == '\0' && errno != ERANGE) {
-      k->d = (double)k->i;
-      k->cls = 1;
-      return;
-    }
+    k->i = strtoll(s, NULL, 10); /* LLONG_MAX / LLONG_MIN si debordement */
+    k->d = (double)k->i;
+    k->cls = 1;
+  } else {
+    k->d = strtod(s, NULL);
+    k->cls = 2;
   }
-  k->d = strtod(s, &end);
-  k->cls = (end != s && *end == '\0') ? 2 : 3;
 }
 
 static int cmp_key(const sortkey_t *a, const sortkey_t *b) {
@@ -274,10 +304,16 @@ static int cmp_sort(const void *pa, const void *pb) {
   return (a->idx > b->idx) - (a->idx < b->idx);
 }
 
+/* Comparaison de cellules ; null est egal a null et inferieur au reste. */
+static int cmp_cell(const char *a, const char *b) {
+  if (!a || !b) return (a != NULL) - (b != NULL);
+  return strcmp(a, b);
+}
+
 static int cmp_out(const row_t *a, const row_t *b) {
   size_t j;
   for (j = 0; j < g_nout; j++) {
-    int c = strcmp(g_cells[a->base + g_ocol[j]], g_cells[b->base + g_ocol[j]]);
+    int c = cmp_cell(g_cells[a->base + g_ocol[j]], g_cells[b->base + g_ocol[j]]);
     if (c) return c;
   }
   return 0;
@@ -295,72 +331,100 @@ static int cmp_idx(const void *pa, const void *pb) {
   return (a->idx > b->idx) - (a->idx < b->idx);
 }
 
-static void put_field(const char *s) {
-  if (strpbrk(s, ",\"\n\r")) {
-    putchar('"');
-    for (; *s; s++) {
-      if (*s == '"') putchar('"');
-      putchar(*s);
-    }
-    putchar('"');
-  } else {
-    fputs(s, stdout);
+static void put_quoted(const char *s) {
+  putchar('"');
+  for (; *s; s++) {
+    if (*s == '"') putchar('"');
+    putchar(*s);
   }
+  putchar('"');
 }
 
-/* "dir/t1.csv" -> vrai si le nom (sans .csv) est TABLE_NAME. */
-static int csv_matches_table(const char *arg) {
+/* Champ de donnees : null n'imprime rien ; la chaine vide et le texte fait
+   uniquement d'espaces sont delimites pour ne pas etre relus comme null ;
+   le reste n'est delimite que si c'est obligatoire. */
+static void put_field(const char *s) {
+  const char *p;
+  if (!s) return;
+  for (p = s; is_blank(*p); p++)
+    ;
+  if (!*p || strpbrk(s, ",\"\n\r")) put_quoted(s);
+  else fputs(s, stdout);
+}
+
+/* Nom de colonne : delimite seulement si c'est obligatoire. */
+static void put_name(const char *s) {
+  if (strpbrk(s, ",\"\n\r")) put_quoted(s);
+  else fputs(s, stdout);
+}
+
+/* "dir/t1.csv" -> nom de la table ("t1"), alloue. */
+static char *table_of_arg(const char *arg) {
   const char *base = base_name(arg);
   size_t n = strlen(base);
-  if (n > 4 && ieq(base + n - 4, ".csv")) n -= 4;
-  return n == strlen(TABLE_NAME) && ieq_n(base, TABLE_NAME, n);
+  char *t;
+  if (n > 4 && strcmp(base + n - 4, ".csv") == 0) n -= 4;
+  t = (char *)xrealloc(NULL, n + 1);
+  memcpy(t, base, n);
+  t[n] = '\0';
+  return t;
 }
 
 static int find_col(char **hdr, const char *name) {
   size_t j;
   for (j = 0; j < g_hn; j++)
-    if (ieq(hdr[j], name)) return (int)j;
+    if (strcmp(hdr[j], name) == 0) return (int)j;
   return -1;
 }
 
 int main(int argc, char **argv) {
   static char obuf[1 << 16];
   const char *path = NULL;
-  char *buf, **hdr, **oname;
-  size_t len, pos = 0, nrows = 0, caprows = 0, capcells = 0, i, j, start, end;
+  char *buf = NULL, **hdr, **oname, **names;
+  size_t len = 0, pos = 0, nrows = 0, caprows = 0, capcells = 0, i, j, start, end;
   int r, k, m;
   line_t ln = { NULL, 0, 0 };
   row_t *rows = NULL;
 
-  if (argc < 2) {
-    fprintf(stderr, "usage: %s <table.csv> [<table.csv> ...]\n",
-            argc > 0 ? argv[0] : "programme");
-    exit(1);
-  }
-  for (m = 1; m < argc && !path; m++)
-    if (csv_matches_table(argv[m])) path = argv[m];
-  if (!path) {
-    printf("Error: no such table: %s\n", TABLE_NAME);
-    exit(1);
-  }
+  if (argc > 1 && strcmp(argv[1], "--check-valid") == 0) return 0;
 
-  buf = read_all(path, &len);
-  if (len >= 3 && (unsigned char)buf[0] == 0xEF &&
-      (unsigned char)buf[1] == 0xBB && (unsigned char)buf[2] == 0xBF)
-    pos = 3; /* BOM UTF-8 */
+  /* Validation de tous les CSV recus (&11), avant toute ecriture. Seule la
+     table interrogee est conservee en memoire. */
+  names = (char **)xrealloc(NULL, (size_t)(argc > 1 ? argc : 1) * sizeof(char *));
+  for (m = 1; m < argc; m++) {
+    size_t flen, fpos = 0;
+    char *fbuf = read_all(argv[m], &flen);
+    int keep;
+    names[m] = table_of_arg(argv[m]);
+    for (k = 1; k < m; k++)
+      if (strcmp(names[k], names[m]) == 0) fail("duplicate table: %s", names[m]);
+    keep = strcmp(names[m], TABLE_NAME) == 0;
+    if (flen >= 3 && (unsigned char)fbuf[0] == 0xEF &&
+        (unsigned char)fbuf[1] == 0xBB && (unsigned char)fbuf[2] == 0xBF)
+      fpos = 3; /* BOM UTF-8 */
+    if (!keep) {
+      while ((r = next_record(fbuf, flen, &fpos, &ln, 0)) > 0)
+        ;
+      if (r < 0) fail("invalid CSV file %s", base_name(argv[m]));
+      free(fbuf);
+      continue;
+    }
+    path = argv[m];
+    buf = fbuf;
+    len = flen;
+    pos = fpos;
+  }
+  if (!path) fail("no such table: %s", TABLE_SQL);
 
   /* En-tete : noms de colonnes, conserves tels quels (espaces compris). */
-  r = next_record(buf, len, &pos, &ln);
-  if (r < 0) {
-    printf("Error: invalid CSV file %s\n", base_name(path));
-    exit(1);
-  }
+  r = next_record(buf, len, &pos, &ln, 0);
+  if (r < 0) fail("invalid CSV file %s", base_name(path));
   g_hn = r > 0 ? ln.n : 0;
   hdr = (char **)xrealloc(NULL, (g_hn ? g_hn : 1) * sizeof(char *));
   for (j = 0; j < g_hn; j++) hdr[j] = ln.v[j];
 
-  /* Donnees : lignes completees par des champs vides, ou tronquees. */
-  while (r > 0 && (r = next_record(buf, len, &pos, &ln)) > 0) {
+  /* Donnees : lignes completees par des null, ou tronquees. */
+  while (r > 0 && (r = next_record(buf, len, &pos, &ln, 1)) > 0) {
     if (nrows == caprows) {
       caprows = caprows ? caprows * 2 : 64;
       rows = (row_t *)xrealloc(rows, caprows * sizeof(row_t));
@@ -371,15 +435,12 @@ int main(int argc, char **argv) {
       g_cells = (char **)xrealloc(g_cells, capcells * sizeof(char *));
     }
     for (j = 0; j < g_hn; j++)
-      g_cells[nrows * g_hn + j] = j < ln.n ? ln.v[j] : EMPTY;
+      g_cells[nrows * g_hn + j] = j < ln.n ? ln.v[j] : NULL;
     rows[nrows].base = nrows * g_hn;
     rows[nrows].idx = nrows;
     nrows++;
   }
-  if (r < 0) {
-    printf("Error: invalid CSV file %s\n", base_name(path));
-    exit(1);
-  }
+  if (r < 0) fail("invalid CSV file %s", base_name(path));
 
   /* Resolution du SELECT : '*' -> toutes les colonnes, dans l'ordre du CSV. */
   {
@@ -396,10 +457,7 @@ int main(int argc, char **argv) {
       }
     } else {
       int c = find_col(hdr, ITEM_COL[k]);
-      if (c < 0) {
-        printf("Error: no such column: %s\n", ITEM_COL[k]);
-        exit(1);
-      }
+      if (c < 0) fail("no such column: %s", ITEM_COL[k]);
       g_ocol[g_nout] = c;
       oname[g_nout++] = ITEM_ALIAS[k] ? (char *)ITEM_ALIAS[k] : hdr[c];
     }
@@ -410,12 +468,9 @@ int main(int argc, char **argv) {
   for (k = 0; k < NORDER; k++) {
     int c = -1;
     for (j = 0; j < g_nout && c < 0; j++)
-      if (ieq(oname[j], ORDER_NAME[k])) c = g_ocol[j];
+      if (strcmp(oname[j], ORDER_NAME[k]) == 0) c = g_ocol[j];
     if (c < 0) c = find_col(hdr, ORDER_NAME[k]);
-    if (c < 0) {
-      printf("Error: no such column: %s\n", ORDER_NAME[k]);
-      exit(1);
-    }
+    if (c < 0) fail("no such column: %s", ORDER_NAME[k]);
     g_scol[k] = c;
   }
 
@@ -455,7 +510,7 @@ int main(int argc, char **argv) {
   if (g_nout > 0) {
     for (j = 0; j < g_nout; j++) {
       if (j) putchar(',');
-      put_field(oname[j]);
+      put_name(oname[j]);
     }
     putchar('\n');
     for (i = start; i < end; i++) {
@@ -504,10 +559,11 @@ let c_of_query (q : Ast.query) =
       "#include <string.h>";
       "";
       "/* Les CSV sont passes en arguments a l'execution. La table est celle";
-      "   dont le nom de fichier (sans .csv) vaut TABLE_NAME ; la premiere";
+      "   dont le nom de fichier (sans .csv) vaut exactement TABLE_NAME ; la premiere";
       "   ligne du CSV est l'en-tete. Colonnes et alias sont resolus a";
       "   l'execution. */";
       Printf.sprintf "#define TABLE_NAME %s" (c_string q.Ast.from);
+      Printf.sprintf "#define TABLE_SQL %s" (c_string q.Ast.from_sql);
       Printf.sprintf "#define NITEMS %d" (List.length items);
       Printf.sprintf "#define NORDER %d" (List.length order_names);
       Printf.sprintf "#define DISTINCT %d" (if q.Ast.distinct then 1 else 0);
